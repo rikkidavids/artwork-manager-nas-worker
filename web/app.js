@@ -5,7 +5,11 @@ const state = {
   albums: [],
   selectedKey: "",
   coverUrl: "",
+  candidateUrl: "",
+  candidates: [],
+  candidateIndex: 0,
   scanActive: false,
+  actionActive: false,
   settings: {},
   settingsLoaded: false,
   appInfo: {},
@@ -30,12 +34,26 @@ const el = {
   currentCover: document.getElementById("currentCover"),
   coverPlaceholder: document.getElementById("coverPlaceholder"),
   coverMeta: document.getElementById("coverMeta"),
+  candidateCover: document.getElementById("candidateCover"),
+  candidatePlaceholder: document.getElementById("candidatePlaceholder"),
+  candidateMeta: document.getElementById("candidateMeta"),
+  candidatePosition: document.getElementById("candidatePosition"),
   summaryLead: document.getElementById("summaryLead"),
   detailStatus: document.getElementById("detailStatus"),
   detailReasonLabel: document.getElementById("detailReasonLabel"),
   detailReason: document.getElementById("detailReason"),
   detailTracks: document.getElementById("detailTracks"),
   detailChecked: document.getElementById("detailChecked"),
+  actionMessage: document.getElementById("actionMessage"),
+  findArtworkBtn: document.getElementById("findArtworkBtn"),
+  approveEmbedBtn: document.getElementById("approveEmbedBtn"),
+  prevCandidateBtn: document.getElementById("prevCandidateBtn"),
+  nextCandidateBtn: document.getElementById("nextCandidateBtn"),
+  rejectCandidateBtn: document.getElementById("rejectCandidateBtn"),
+  openSourceBtn: document.getElementById("openSourceBtn"),
+  googleImagesBtn: document.getElementById("googleImagesBtn"),
+  markGoodBtn: document.getElementById("markGoodBtn"),
+  skipAlbumBtn: document.getElementById("skipAlbumBtn"),
   settingsOverlay: document.getElementById("settingsOverlay"),
   settingsForm: document.getElementById("settingsForm"),
   settingsPanelTitle: document.getElementById("settingsPanelTitle"),
@@ -56,6 +74,10 @@ const el = {
   settingMaxEmbed: document.getElementById("settingMaxEmbed"),
   settingSaveFolder: document.getElementById("settingSaveFolder"),
   settingBackupEmbed: document.getElementById("settingBackupEmbed"),
+  settingDeezerEnabled: document.getElementById("settingDeezerEnabled"),
+  settingItunesEnabled: document.getElementById("settingItunesEnabled"),
+  settingMaxCandidates: document.getElementById("settingMaxCandidates"),
+  settingProviderWorkers: document.getElementById("settingProviderWorkers"),
   settingToken: document.getElementById("settingToken"),
   settingTokenRequired: document.getElementById("settingTokenRequired"),
 };
@@ -138,6 +160,33 @@ function statusClass(album) {
   return "";
 }
 
+function selectedAlbum() {
+  return state.albums.find((item) => item.album_key === state.selectedKey) || null;
+}
+
+function selectedCandidate() {
+  return state.candidates[state.candidateIndex] || null;
+}
+
+function candidateLabel(candidate) {
+  if (!candidate) return "No candidate selected.";
+  const parts = [];
+  if (candidate.source) parts.push(candidate.source);
+  if (candidate.size_label) parts.push(candidate.size_label);
+  if (candidate.score || candidate.score === 0) parts.push(`${candidate.score}/100`);
+  const title = candidate.release_title ? ` - ${candidate.release_title}` : "";
+  return `${parts.join(" - ")}${title}`;
+}
+
+function googleImagesUrl(album) {
+  if (!album) return "";
+  const target = Number(state.settings.preferred_artwork_size || state.settings.scan_min_artwork_size || 1200);
+  const terms = [album.search_artist || album.artist, album.search_album || album.album, `${target}x${target}`]
+    .filter(Boolean)
+    .join(" ");
+  return `https://www.google.com/search?udm=2&tbs=isz:l&q=${encodeURIComponent(terms)}`;
+}
+
 function setCounts(counts = {}) {
   document.querySelectorAll(".chip").forEach((chip) => {
     const bucket = chip.dataset.bucket;
@@ -193,6 +242,10 @@ function populateSettings(payload = {}) {
   el.settingMaxEmbed.value = settings.max_embedded_artwork_size || 0;
   el.settingSaveFolder.checked = Boolean(settings.save_approved_artwork_to_album_folder);
   el.settingBackupEmbed.checked = Boolean(settings.backup_before_embed);
+  el.settingDeezerEnabled.checked = Boolean(settings.deezer_enabled);
+  el.settingItunesEnabled.checked = Boolean(settings.itunes_enabled);
+  el.settingMaxCandidates.value = settings.max_candidates_per_album || 5;
+  el.settingProviderWorkers.value = settings.parallel_provider_workers || 2;
   el.settingToken.value = state.token;
   el.settingTokenRequired.value = info.token_required ? "Yes" : "No";
 }
@@ -210,6 +263,10 @@ function readSettingsForm() {
     max_embedded_artwork_size: Number(el.settingMaxEmbed.value || 0),
     save_approved_artwork_to_album_folder: el.settingSaveFolder.checked,
     backup_before_embed: el.settingBackupEmbed.checked,
+    deezer_enabled: el.settingDeezerEnabled.checked,
+    itunes_enabled: el.settingItunesEnabled.checked,
+    max_candidates_per_album: Number(el.settingMaxCandidates.value || 5),
+    parallel_provider_workers: Number(el.settingProviderWorkers.value || 2),
   };
 }
 
@@ -282,6 +339,11 @@ function activeScanJob(status) {
   return jobs.find((job) => job && job.kind === "scan-library");
 }
 
+function activeReviewJob(status) {
+  const jobs = Array.isArray(status.active_jobs) ? status.active_jobs : [];
+  return jobs.find((job) => job && ["artwork-search", "approve-embed"].includes(job.kind));
+}
+
 function renderScan(status) {
   const job = activeScanJob(status);
   state.scanActive = Boolean(job);
@@ -305,6 +367,34 @@ function renderScan(status) {
   el.scanText.textContent = bits.join(" - ") + (latest ? ` - Latest: ${shortPath(latest)}` : "");
 }
 
+function updateActionButtons() {
+  const album = selectedAlbum();
+  const candidate = selectedCandidate();
+  const busy = Boolean(state.actionActive);
+  const hasCandidate = Boolean(candidate);
+  const sourceUrl = candidate?.source_page || candidate?.source_url || "";
+  el.findArtworkBtn.disabled = !album || busy;
+  el.approveEmbedBtn.disabled = !album || !hasCandidate || busy;
+  el.prevCandidateBtn.disabled = !album || state.candidates.length < 2 || busy;
+  el.nextCandidateBtn.disabled = !album || state.candidates.length < 2 || busy;
+  el.rejectCandidateBtn.disabled = !album || !hasCandidate || busy;
+  el.openSourceBtn.disabled = !sourceUrl;
+  el.googleImagesBtn.disabled = !album;
+  el.markGoodBtn.disabled = !album || busy;
+  el.skipAlbumBtn.disabled = !album || busy;
+}
+
+function renderReviewJob(status) {
+  const job = activeReviewJob(status);
+  state.actionActive = Boolean(job);
+  if (job) {
+    const count = job.candidate_count ? ` - ${fmt(job.candidate_count)} option(s)` : "";
+    const label = job.kind === "approve-embed" ? "Embedding artwork" : "Searching artwork";
+    el.actionMessage.textContent = `${label}${count}...`;
+  }
+  updateActionButtons();
+}
+
 async function refreshStatus() {
   try {
     const status = await api("/api/app/status");
@@ -323,6 +413,7 @@ async function refreshStatus() {
     }
     setCounts(counts);
     renderScan(status);
+    renderReviewJob(status);
     el.workerSummary.textContent = `Build ${status.worker_build || "-"} - ${shortPath((app.music_roots || [])[0] || "/music")}`;
     return status;
   } catch (error) {
@@ -334,7 +425,7 @@ async function refreshStatus() {
 function renderRows() {
   el.shownCount.textContent = `${fmt(state.albums.length)} shown`;
   if (!state.albums.length) {
-    el.albumRows.innerHTML = '<tr><td colspan="4" class="empty">No albums in this view.</td></tr>';
+    el.albumRows.innerHTML = '<tr><td colspan="5" class="empty">No albums in this view.</td></tr>';
     return;
   }
   el.albumRows.innerHTML = "";
@@ -343,7 +434,7 @@ function renderRows() {
     const row = document.createElement("tr");
     row.dataset.albumKey = album.album_key;
     row.classList.toggle("selected", album.album_key === state.selectedKey);
-    [album.status_label || "", album.artist || "", album.album || "", album.size_label || ""].forEach((value, index) => {
+    [album.status_label || "", album.artist || "", album.album || "", album.size_label || "", album.candidate_count || 0].forEach((value, index) => {
       const cell = document.createElement("td");
       cell.title = value;
       cell.textContent = value;
@@ -374,6 +465,7 @@ async function refreshQueue() {
 }
 
 async function loadCover(album) {
+  const albumKey = album?.album_key || "";
   if (state.coverUrl) {
     URL.revokeObjectURL(state.coverUrl);
     state.coverUrl = "";
@@ -392,6 +484,7 @@ async function loadCover(album) {
     });
     if (!response.ok) throw new Error("No artwork");
     const blob = await response.blob();
+    if (state.selectedKey !== albumKey) return;
     state.coverUrl = URL.createObjectURL(blob);
     el.currentCover.src = state.coverUrl;
     box.classList.add("has-cover");
@@ -402,8 +495,79 @@ async function loadCover(album) {
   }
 }
 
+async function loadCandidateCover(candidate) {
+  const candidateId = candidate?.candidate_id || "";
+  if (state.candidateUrl) {
+    URL.revokeObjectURL(state.candidateUrl);
+    state.candidateUrl = "";
+  }
+  const box = el.candidateCover.closest(".cover-box");
+  box.classList.remove("has-cover");
+  el.candidateCover.removeAttribute("src");
+  el.candidatePlaceholder.textContent = "No candidate";
+  if (!candidate) {
+    return;
+  }
+  try {
+    const response = await fetch(`/api/artwork/candidate?candidate_id=${encodeURIComponent(candidate.candidate_id)}`, {
+      headers: headers(),
+    });
+    if (!response.ok) throw new Error("No candidate artwork");
+    const blob = await response.blob();
+    if ((selectedCandidate()?.candidate_id || "") !== candidateId) return;
+    state.candidateUrl = URL.createObjectURL(blob);
+    el.candidateCover.src = state.candidateUrl;
+    box.classList.add("has-cover");
+  } catch (error) {
+    el.candidatePlaceholder.textContent = "Candidate unavailable";
+  }
+}
+
+function renderCandidate() {
+  const candidate = selectedCandidate();
+  el.candidatePosition.textContent = state.candidates.length ? `${state.candidateIndex + 1} of ${state.candidates.length}` : "0 of 0";
+  if (!candidate) {
+    el.candidateMeta.textContent = selectedAlbum() ? "No saved cover options. Find artwork to start." : "Find artwork to see options.";
+    if (!state.actionActive) {
+      el.actionMessage.textContent = selectedAlbum() ? "Find artwork to save cover options." : "Select an album to begin.";
+    }
+    loadCandidateCover(null);
+    updateActionButtons();
+    return;
+  }
+  const warnings = Array.isArray(candidate.warnings) && candidate.warnings.length ? ` - ${candidate.warnings.slice(0, 2).join(", ")}` : "";
+  el.candidateMeta.textContent = `${candidateLabel(candidate)}${warnings}`;
+  if (!state.actionActive) {
+    el.actionMessage.textContent = "Choose a cover, then approve it.";
+  }
+  loadCandidateCover(candidate);
+  updateActionButtons();
+}
+
+async function refreshCandidates(album) {
+  if (!album) {
+    state.candidates = [];
+    state.candidateIndex = 0;
+    renderCandidate();
+    return;
+  }
+  const previousId = selectedCandidate()?.candidate_id;
+  try {
+    const payload = await api(`/api/candidates?album_key=${encodeURIComponent(album.album_key)}`);
+    if (album.album_key !== state.selectedKey) return;
+    state.candidates = payload.candidates || [];
+    const previousIndex = state.candidates.findIndex((candidate) => candidate.candidate_id === previousId);
+    state.candidateIndex = previousIndex >= 0 ? previousIndex : 0;
+    renderCandidate();
+  } catch (error) {
+    state.candidates = [];
+    state.candidateIndex = 0;
+    renderCandidate();
+  }
+}
+
 function renderSelected() {
-  const album = state.albums.find((item) => item.album_key === state.selectedKey);
+  const album = selectedAlbum();
   document.querySelectorAll("tbody tr").forEach((row) => {
     row.classList.toggle("selected", row.dataset.albumKey === state.selectedKey);
   });
@@ -419,7 +583,10 @@ function renderSelected() {
     el.detailReason.textContent = "-";
     el.detailTracks.textContent = "-";
     el.detailChecked.textContent = "-";
+    el.actionMessage.textContent = "Select an album to begin.";
     loadCover(null);
+    refreshCandidates(null);
+    updateActionButtons();
     return;
   }
   el.albumTitle.textContent = `${album.artist} - ${album.album}`;
@@ -433,7 +600,12 @@ function renderSelected() {
   el.detailReason.textContent = isDoneAlbum(album) ? "No action needed." : album.status_reason || "Needs attention.";
   el.detailTracks.textContent = trackLabel(album);
   el.detailChecked.textContent = formatDateTime(album.last_scanned);
+  if (!state.actionActive) {
+    el.actionMessage.textContent = state.candidates.length ? "Choose a cover, then approve it." : "Find artwork to save cover options.";
+  }
   loadCover(album);
+  refreshCandidates(album);
+  updateActionButtons();
 }
 
 function selectAlbum(albumKey) {
@@ -456,6 +628,93 @@ async function startScan() {
   }
 }
 
+async function startArtworkSearch() {
+  const album = selectedAlbum();
+  if (!album) return;
+  state.actionActive = true;
+  el.actionMessage.textContent = "Searching artwork...";
+  updateActionButtons();
+  try {
+    await api("/api/artwork/search", {
+      method: "POST",
+      body: JSON.stringify({ album_key: album.album_key }),
+    });
+    await refreshStatus();
+  } catch (error) {
+    state.actionActive = false;
+    el.actionMessage.textContent = error.message || "Artwork search could not start.";
+    updateActionButtons();
+  }
+}
+
+async function approveSelectedCandidate() {
+  const album = selectedAlbum();
+  const candidate = selectedCandidate();
+  if (!album || !candidate) return;
+  state.actionActive = true;
+  el.actionMessage.textContent = "Embedding artwork on the NAS...";
+  updateActionButtons();
+  try {
+    await api("/api/artwork/approve", {
+      method: "POST",
+      body: JSON.stringify({ album_key: album.album_key, candidate_id: candidate.candidate_id }),
+    });
+    await refreshStatus();
+  } catch (error) {
+    state.actionActive = false;
+    el.actionMessage.textContent = error.message || "Approve and embed could not start.";
+    updateActionButtons();
+  }
+}
+
+async function rejectSelectedCandidate() {
+  const album = selectedAlbum();
+  const candidate = selectedCandidate();
+  if (!album || !candidate) return;
+  try {
+    await api("/api/artwork/reject", {
+      method: "POST",
+      body: JSON.stringify({ album_key: album.album_key, candidate_id: candidate.candidate_id }),
+    });
+    await refreshQueue();
+    await refreshCandidates(selectedAlbum());
+  } catch (error) {
+    el.actionMessage.textContent = error.message || "Candidate could not be rejected.";
+  }
+}
+
+async function runAlbumAction(path, message) {
+  const album = selectedAlbum();
+  if (!album) return;
+  try {
+    await api(path, {
+      method: "POST",
+      body: JSON.stringify({ album_key: album.album_key }),
+    });
+    el.actionMessage.textContent = message;
+    await refreshQueue();
+  } catch (error) {
+    el.actionMessage.textContent = error.message || "Action failed.";
+  }
+}
+
+function moveCandidate(delta) {
+  if (!state.candidates.length) return;
+  state.candidateIndex = (state.candidateIndex + delta + state.candidates.length) % state.candidates.length;
+  renderCandidate();
+}
+
+function openSourcePage() {
+  const candidate = selectedCandidate();
+  const url = candidate?.source_page || candidate?.source_url || "";
+  if (url) window.open(url, "_blank", "noopener");
+}
+
+function openGoogleImages() {
+  const url = googleImagesUrl(selectedAlbum());
+  if (url) window.open(url, "_blank", "noopener");
+}
+
 function bind() {
   el.refreshBtn.addEventListener("click", async () => {
     await refreshStatus();
@@ -472,6 +731,15 @@ function bind() {
     button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab || "general"));
   });
   el.scanBtn.addEventListener("click", startScan);
+  el.findArtworkBtn.addEventListener("click", startArtworkSearch);
+  el.approveEmbedBtn.addEventListener("click", approveSelectedCandidate);
+  el.rejectCandidateBtn.addEventListener("click", rejectSelectedCandidate);
+  el.prevCandidateBtn.addEventListener("click", () => moveCandidate(-1));
+  el.nextCandidateBtn.addEventListener("click", () => moveCandidate(1));
+  el.openSourceBtn.addEventListener("click", openSourcePage);
+  el.googleImagesBtn.addEventListener("click", openGoogleImages);
+  el.markGoodBtn.addEventListener("click", () => runAlbumAction("/api/album/mark-good", "Marked as good."));
+  el.skipAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/skip", "Skipped for now."));
   el.searchInput.addEventListener("input", () => {
     state.query = el.searchInput.value.trim();
     refreshQueue();
@@ -486,9 +754,13 @@ function bind() {
 }
 
 async function tick() {
+  const hadAction = state.actionActive;
   const status = await refreshStatus();
-  if (status && state.scanActive) {
+  if (status && (state.scanActive || state.actionActive || hadAction)) {
     await refreshQueue();
+    if (state.selectedKey) {
+      await refreshCandidates(selectedAlbum());
+    }
   }
 }
 

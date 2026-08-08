@@ -8,6 +8,7 @@ instead of through SMB/VPN.
 from __future__ import annotations
 
 import base64
+import difflib
 import hashlib
 import json
 import mimetypes
@@ -27,14 +28,16 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import quote_plus
 
+import requests
 from PIL import Image, ImageOps
 from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.15'
-APP_BUILD = '5.15'
+WORKER_BUILD = '5.16'
+APP_BUILD = '5.16'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -43,7 +46,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.15 quietens the queue and simplifies album summaries.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.16 adds NAS web artwork search and approve/embed.'
 )
 
 
@@ -62,6 +65,7 @@ BACKUP_ROOT = Path(os.environ.get('AMW_BACKUP_DIR') or '/backups').resolve()
 DATA_ROOT = Path(os.environ.get('AMW_DATA_DIR') or '/data').resolve()
 DB_PATH = DATA_ROOT / 'artwork_manager.sqlite3'
 WEB_ROOT = Path(__file__).resolve().parent / 'web'
+TEMP_CANDIDATE_DIR = DATA_ROOT / 'temporary_candidates'
 API_TOKEN = os.environ.get('AMW_TOKEN') or ''
 HOST = os.environ.get('AMW_HOST') or '0.0.0.0'
 PORT = int(os.environ.get('AMW_PORT') or '8765')
@@ -134,6 +138,7 @@ def begin_job(kind: str, payload: Dict[str, Any]) -> Tuple[str, float, str]:
         'job_id': job_id,
         'kind': kind,
         'album_folder': album_folder,
+        'album_key': str(payload.get('album_key') or ''),
         'label': job_album_label(payload),
         'started_at': now(),
         '_started_mono': started_mono,
@@ -206,6 +211,9 @@ def finish_job(job_id: str, started_mono: float, ok: bool, result: Dict[str, Any
                     record['failed_count'] = len(result.get('failed') or [])
                 except Exception:
                     record['failed_count'] = 0
+            for key in ('candidate_count', 'saved_candidate_ids', 'status', 'reason'):
+                if key in result:
+                    record[key] = result.get(key)
             deep = result.get('deep_file_check') if isinstance(result.get('deep_file_check'), dict) else None
             if deep:
                 record['checked_files'] = deep.get('checked_files')
@@ -241,7 +249,15 @@ def status_payload(public: bool = False) -> Dict[str, Any]:
         'active_jobs': active,
         'recent_jobs': recent,
         'recent_job_count': len(recent),
-        'endpoints': ['GET /app/', 'GET /', 'GET /version', 'GET /health', 'GET /status', 'GET /api/app/status', 'GET /api/settings', 'GET /api/albums', 'GET /api/artwork/current', 'POST /api/settings', 'POST /api/scan/start', 'POST /scan-library', 'POST /embed', 'POST /deep-check', 'POST /path-check'],
+        'endpoints': [
+            'GET /app/', 'GET /', 'GET /version', 'GET /health', 'GET /status',
+            'GET /api/app/status', 'GET /api/settings', 'GET /api/albums',
+            'GET /api/candidates', 'GET /api/artwork/current', 'GET /api/artwork/candidate',
+            'POST /api/settings', 'POST /api/scan/start', 'POST /api/artwork/search',
+            'POST /api/artwork/approve', 'POST /api/artwork/reject', 'POST /api/album/skip',
+            'POST /api/album/mark-good', 'POST /scan-library', 'POST /embed', 'POST /deep-check',
+            'POST /path-check',
+        ],
         'update_hint': UPDATE_HINT,
         'build_marker': f'amw-worker-{WORKER_BUILD}-api-{WORKER_API}',
     }
@@ -631,6 +647,28 @@ CREATE TABLE IF NOT EXISTS history (
   payload TEXT,
   created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  album_key TEXT,
+  source TEXT,
+  image_path TEXT,
+  width INTEGER,
+  height INTEGER,
+  source_url TEXT,
+  source_detail TEXT,
+  release_title TEXT,
+  release_mbid TEXT,
+  source_meta TEXT,
+  warnings TEXT,
+  score INTEGER DEFAULT 0,
+  score_summary TEXT,
+  rejected INTEGER DEFAULT 0,
+  approved INTEGER DEFAULT 0,
+  candidate_state TEXT DEFAULT 'available',
+  state_reason TEXT,
+  state_updated_at TEXT,
+  created_at TEXT
+);
 CREATE TABLE IF NOT EXISTS app_settings (
   id INTEGER PRIMARY KEY CHECK(id=1),
   payload TEXT,
@@ -638,11 +676,34 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 CREATE INDEX IF NOT EXISTS idx_albums_status_artist_album ON albums(status, artist, album);
 CREATE INDEX IF NOT EXISTS idx_albums_path ON albums(album_path);
+CREATE INDEX IF NOT EXISTS idx_candidates_album_flags ON candidates(album_key, approved, rejected);
+CREATE INDEX IF NOT EXISTS idx_candidates_source_url ON candidates(album_key, source, source_url);
+CREATE INDEX IF NOT EXISTS idx_candidates_score ON candidates(album_key, score);
 '''
+
+WEB_TABLE_ADDITIONS = {
+    'candidates': [
+        ('source_url', 'TEXT'),
+        ('source_detail', 'TEXT'),
+        ('release_title', 'TEXT'),
+        ('release_mbid', 'TEXT'),
+        ('source_meta', 'TEXT'),
+        ('warnings', 'TEXT'),
+        ('score', 'INTEGER DEFAULT 0'),
+        ('score_summary', 'TEXT'),
+        ('rejected', 'INTEGER DEFAULT 0'),
+        ('approved', 'INTEGER DEFAULT 0'),
+        ('candidate_state', "TEXT DEFAULT 'available'"),
+        ('state_reason', 'TEXT'),
+        ('state_updated_at', 'TEXT'),
+        ('created_at', 'TEXT'),
+    ],
+}
 
 
 def init_web_db() -> None:
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    TEMP_CANDIDATE_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         try:
@@ -651,6 +712,11 @@ def init_web_db() -> None:
         except Exception:
             pass
         conn.executescript(WEB_SCHEMA)
+        for table, additions in WEB_TABLE_ADDITIONS.items():
+            cols = {r['name'] for r in conn.execute(f'PRAGMA table_info({table})').fetchall()}
+            for col, typ in additions:
+                if col not in cols:
+                    conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {typ}')
 
 
 def db_connect() -> sqlite3.Connection:
@@ -704,6 +770,10 @@ def web_default_settings() -> Dict[str, Any]:
         'save_approved_artwork_to_album_folder': web_bool(os.environ.get('AMW_SAVE_FOLDER_COVER'), False),
         'max_embedded_artwork_size': web_int(os.environ.get('AMW_MAX_EMBEDDED_ARTWORK_SIZE') or 0, 0, 0, 5000),
         'backup_before_embed': True,
+        'max_candidates_per_album': web_int(os.environ.get('AMW_MAX_CANDIDATES_PER_ALBUM') or 5, 5, 1, 25),
+        'parallel_provider_workers': web_int(os.environ.get('AMW_PROVIDER_WORKERS') or 2, 2, 1, 4),
+        'deezer_enabled': web_bool(os.environ.get('AMW_DEEZER_ENABLED'), True),
+        'itunes_enabled': web_bool(os.environ.get('AMW_ITUNES_ENABLED'), True),
     }
 
 
@@ -731,6 +801,10 @@ def web_get_settings() -> Dict[str, Any]:
     settings['save_approved_artwork_to_album_folder'] = web_bool(settings.get('save_approved_artwork_to_album_folder'), False)
     settings['max_embedded_artwork_size'] = web_int(settings.get('max_embedded_artwork_size'), 0, 0, 5000)
     settings['backup_before_embed'] = web_bool(settings.get('backup_before_embed'), True)
+    settings['max_candidates_per_album'] = web_int(settings.get('max_candidates_per_album'), 5, 1, 25)
+    settings['parallel_provider_workers'] = web_int(settings.get('parallel_provider_workers'), 2, 1, 4)
+    settings['deezer_enabled'] = web_bool(settings.get('deezer_enabled'), True)
+    settings['itunes_enabled'] = web_bool(settings.get('itunes_enabled'), True)
     return settings
 
 
@@ -748,6 +822,10 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
         'save_approved_artwork_to_album_folder',
         'max_embedded_artwork_size',
         'backup_before_embed',
+        'max_candidates_per_album',
+        'parallel_provider_workers',
+        'deezer_enabled',
+        'itunes_enabled',
     }
     for key in allowed:
         if key in payload:
@@ -764,6 +842,10 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
     current['save_approved_artwork_to_album_folder'] = web_bool(current.get('save_approved_artwork_to_album_folder'), False)
     current['max_embedded_artwork_size'] = web_int(current.get('max_embedded_artwork_size'), 0, 0, 5000)
     current['backup_before_embed'] = web_bool(current.get('backup_before_embed'), True)
+    current['max_candidates_per_album'] = web_int(current.get('max_candidates_per_album'), 5, 1, 25)
+    current['parallel_provider_workers'] = web_int(current.get('parallel_provider_workers'), 2, 1, 4)
+    current['deezer_enabled'] = web_bool(current.get('deezer_enabled'), True)
+    current['itunes_enabled'] = web_bool(current.get('itunes_enabled'), True)
     with db_connect() as conn:
         conn.execute(
             'INSERT INTO app_settings(id, payload, updated_at) VALUES(1, ?, ?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at',
@@ -997,6 +1079,7 @@ def web_album_from_row(row: sqlite3.Row) -> Dict[str, Any]:
         'track_count': row['track_count'] or 0,
         'last_scanned': row['last_scanned'] or '',
         'notes': notes,
+        'candidate_count': int(web_row_get(row, 'candidate_count', 0) or 0),
     }
 
 
@@ -1008,7 +1091,14 @@ def web_query_albums(params: Dict[str, List[str]]) -> Dict[str, Any]:
     except Exception:
         limit = 250
     with db_connect() as conn:
-        rows = conn.execute('SELECT * FROM albums ORDER BY lower(artist), lower(album), lower(album_path)').fetchall()
+        rows = conn.execute(
+            '''
+            SELECT a.*, COUNT(CASE WHEN c.approved=0 AND c.rejected=0 THEN 1 END) AS candidate_count
+            FROM albums a LEFT JOIN candidates c ON c.album_key=a.album_key
+            GROUP BY a.album_key
+            ORDER BY lower(a.artist), lower(a.album), lower(a.album_path)
+            '''
+        ).fetchall()
     items = []
     for row in rows:
         item = web_album_from_row(row)
@@ -1026,8 +1116,822 @@ def web_query_albums(params: Dict[str, List[str]]) -> Dict[str, Any]:
 
 def web_get_album(album_key: str) -> Dict[str, Any] | None:
     with db_connect() as conn:
-        row = conn.execute('SELECT * FROM albums WHERE album_key=?', (album_key,)).fetchone()
+        row = conn.execute(
+            '''
+            SELECT a.*, COUNT(CASE WHEN c.approved=0 AND c.rejected=0 THEN 1 END) AS candidate_count
+            FROM albums a LEFT JOIN candidates c ON c.album_key=a.album_key
+            WHERE a.album_key=?
+            GROUP BY a.album_key
+            ''',
+            (album_key,),
+        ).fetchone()
     return web_album_from_row(row) if row else None
+
+
+def web_row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+    try:
+        if hasattr(row, 'keys') and key not in row.keys():
+            return default
+        return row[key]
+    except Exception:
+        return default
+
+
+def web_add_history(album_key: str, action: str, payload: Dict[str, Any]) -> None:
+    with db_connect() as conn:
+        conn.execute(
+            'INSERT INTO history(album_key, action, payload, created_at) VALUES(?,?,?,?)',
+            (album_key, action, json.dumps(payload or {}), now()),
+        )
+
+
+def web_set_album_status(album_key: str, status: str, reason: str = '', updates: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    if not album_key:
+        raise ValueError('Missing album key')
+    updates = dict(updates or {})
+    with db_connect() as conn:
+        row = conn.execute('SELECT notes FROM albums WHERE album_key=?', (album_key,)).fetchone()
+        notes = web_decode_notes(row['notes']) if row else {}
+        if reason:
+            notes['status_reason'] = reason
+        notes.update(updates)
+        conn.execute(
+            'UPDATE albums SET status=?, notes=?, last_scanned=? WHERE album_key=?',
+            (status, json.dumps(notes), now(), album_key),
+        )
+    return {'status': status, 'reason': reason}
+
+
+def web_active_candidate_count(album_key: str) -> int:
+    if not album_key:
+        return 0
+    with db_connect() as conn:
+        row = conn.execute(
+            'SELECT COUNT(*) AS n FROM candidates WHERE album_key=? AND approved=0 AND rejected=0',
+            (album_key,),
+        ).fetchone()
+    return int(row['n'] if row else 0)
+
+
+def web_decode_candidate_row(row: sqlite3.Row) -> Dict[str, Any]:
+    d = dict(row)
+    d['candidate_id'] = d.get('id')
+    try:
+        d['warnings'] = json.loads(d.get('warnings') or '[]')
+        if not isinstance(d['warnings'], list):
+            d['warnings'] = []
+    except Exception:
+        d['warnings'] = []
+    try:
+        d['source_meta_json'] = json.loads(d.get('source_meta') or '{}')
+        if not isinstance(d['source_meta_json'], dict):
+            d['source_meta_json'] = {}
+    except Exception:
+        d['source_meta_json'] = {}
+    d['score'] = int(d.get('score') or 0)
+    d['source_detail'] = d.get('source_detail') or ''
+    d['score_summary'] = d.get('score_summary') or ''
+    d['release_title'] = d.get('release_title') or ''
+    d['release_mbid'] = d.get('release_mbid') or ''
+    d['candidate_state'] = d.get('candidate_state') or ('approved' if d.get('approved') else ('rejected' if d.get('rejected') else 'available'))
+    d['state_reason'] = d.get('state_reason') or ''
+    d['state_updated_at'] = d.get('state_updated_at') or ''
+    d['album_folder'] = web_row_get(row, 'album_folder', d.get('album_path') or '')
+    d['artist'] = web_row_get(row, 'artist', '')
+    d['album'] = web_row_get(row, 'album', '')
+    return d
+
+
+def web_public_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    meta = candidate.get('source_meta_json') or {}
+    source_page = meta.get('source_page') or meta.get('collectionViewUrl') or meta.get('link') or ''
+    warnings = [str(w) for w in (candidate.get('warnings') or []) if str(w).strip()]
+    return {
+        'candidate_id': candidate.get('candidate_id') or candidate.get('id'),
+        'album_key': candidate.get('album_key') or '',
+        'source': candidate.get('source') or '',
+        'source_detail': candidate.get('source_detail') or '',
+        'width': candidate.get('width') or 0,
+        'height': candidate.get('height') or 0,
+        'size_label': f"{candidate.get('width') or '?'} x {candidate.get('height') or '?'}",
+        'source_url': candidate.get('source_url') or '',
+        'source_page': source_page,
+        'release_title': candidate.get('release_title') or '',
+        'release_mbid': candidate.get('release_mbid') or '',
+        'source_meta': meta,
+        'warnings': warnings,
+        'score': int(candidate.get('score') or 0),
+        'score_summary': candidate.get('score_summary') or '',
+        'candidate_state': candidate.get('candidate_state') or 'available',
+        'state_reason': candidate.get('state_reason') or '',
+        'created_at': candidate.get('created_at') or '',
+    }
+
+
+def web_list_candidates(album_key: str, include_rejected: bool = False) -> List[Dict[str, Any]]:
+    if not album_key:
+        return []
+    query = '''
+        SELECT c.*, a.artist, a.album, a.album_path AS album_folder
+        FROM candidates c LEFT JOIN albums a ON a.album_key=c.album_key
+        WHERE c.album_key=? AND c.approved=0
+    '''
+    args: List[Any] = [album_key]
+    if not include_rejected:
+        query += ' AND c.rejected=0'
+    query += ' ORDER BY COALESCE(c.score,0) DESC, c.id ASC'
+    with db_connect() as conn:
+        rows = conn.execute(query, args).fetchall()
+    return [web_decode_candidate_row(row) for row in rows]
+
+
+def web_get_candidate(candidate_id: Any) -> Dict[str, Any] | None:
+    try:
+        cid = int(candidate_id)
+    except Exception:
+        return None
+    with db_connect() as conn:
+        row = conn.execute(
+            '''
+            SELECT c.*, a.artist, a.album, a.album_path AS album_folder
+            FROM candidates c LEFT JOIN albums a ON a.album_key=c.album_key
+            WHERE c.id=?
+            ''',
+            (cid,),
+        ).fetchone()
+    return web_decode_candidate_row(row) if row else None
+
+
+def web_data_path(value: Any) -> Path:
+    path = Path(str(value or '')).resolve(strict=False)
+    root = DATA_ROOT.resolve(strict=False)
+    try:
+        path.relative_to(root)
+    except ValueError:
+        raise ValueError('Candidate file is outside the app data folder')
+    return path
+
+
+def web_candidate_artwork(candidate_id: Any) -> Tuple[bytes, str]:
+    candidate = web_get_candidate(candidate_id)
+    if not candidate:
+        raise FileNotFoundError('candidate not found')
+    path = web_data_path(candidate.get('image_path'))
+    if not path.is_file():
+        raise FileNotFoundError('candidate artwork file is missing')
+    mime = mimetypes.guess_type(str(path))[0] or 'image/jpeg'
+    if mime not in {'image/jpeg', 'image/png', 'image/webp'}:
+        mime = 'image/jpeg'
+    return path.read_bytes(), mime
+
+
+def web_mark_candidate(candidate_id: Any, approved: bool | None = None, rejected: bool | None = None, state_reason: str = '') -> None:
+    sets = []
+    vals: List[Any] = []
+    if approved is not None:
+        sets.append('approved=?')
+        vals.append(1 if approved else 0)
+    if rejected is not None:
+        sets.append('rejected=?')
+        vals.append(1 if rejected else 0)
+    state = ''
+    reason = state_reason or ''
+    if approved is True:
+        state = 'approved'
+        reason = reason or 'Approved by user'
+    elif rejected is True:
+        state = 'superseded' if 'superseded' in reason.lower() else 'rejected'
+        reason = reason or 'Rejected by user'
+    elif approved is False and rejected is False:
+        state = 'available'
+        reason = reason or 'Available for review'
+    if state:
+        sets.extend(['candidate_state=?', 'state_reason=?', 'state_updated_at=?'])
+        vals.extend([state, reason, now()])
+    if not sets:
+        return
+    vals.append(int(candidate_id))
+    with db_connect() as conn:
+        conn.execute(f'UPDATE candidates SET {", ".join(sets)} WHERE id=?', vals)
+
+
+def web_mark_album_candidates(album_key: str, approved: bool | None = None, rejected: bool | None = None, except_candidate_id: Any = None, state_reason: str = '') -> None:
+    sets = []
+    vals: List[Any] = []
+    if approved is not None:
+        sets.append('approved=?')
+        vals.append(1 if approved else 0)
+    if rejected is not None:
+        sets.append('rejected=?')
+        vals.append(1 if rejected else 0)
+    state = ''
+    reason = state_reason or ''
+    if approved is True:
+        state = 'approved'
+        reason = reason or 'Approved by user'
+    elif rejected is True:
+        state = 'superseded' if 'superseded' in reason.lower() else 'rejected'
+        reason = reason or 'Rejected by user'
+    elif approved is False and rejected is False:
+        state = 'available'
+        reason = reason or 'Available for review'
+    if state:
+        sets.extend(['candidate_state=?', 'state_reason=?', 'state_updated_at=?'])
+        vals.extend([state, reason, now()])
+    if not sets:
+        return
+    query = f'UPDATE candidates SET {", ".join(sets)} WHERE album_key=?'
+    vals.append(album_key)
+    if except_candidate_id is not None:
+        query += ' AND id<>?'
+        vals.append(int(except_candidate_id))
+    with db_connect() as conn:
+        conn.execute(query, vals)
+
+
+def web_add_candidate(album_key: str, candidate: Dict[str, Any]) -> int:
+    candidate = dict(candidate or {})
+    source = str(candidate.get('source') or '').strip()
+    source_url = str(candidate.get('source_url') or '').strip()
+    image_path = str(candidate.get('image_path') or '').strip()
+    if not album_key or not source or not image_path:
+        raise ValueError('Candidate is missing required fields')
+    source_meta = candidate.get('source_meta') or {}
+    if not isinstance(source_meta, str):
+        source_meta = json.dumps(source_meta)
+    with db_connect() as conn:
+        if source_url:
+            existing = conn.execute(
+                'SELECT id FROM candidates WHERE album_key=? AND source=? AND source_url=?',
+                (album_key, source, source_url),
+            ).fetchone()
+            if existing:
+                return int(existing['id'])
+        existing = conn.execute(
+            'SELECT id FROM candidates WHERE album_key=? AND source=? AND image_path=?',
+            (album_key, source, image_path),
+        ).fetchone()
+        if existing:
+            return int(existing['id'])
+        state_now = now()
+        conn.execute(
+            '''
+            INSERT INTO candidates(
+              album_key, source, image_path, width, height, source_url, source_detail,
+              release_title, release_mbid, source_meta, warnings, score, score_summary,
+              candidate_state, state_reason, state_updated_at, created_at
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ''',
+            (
+                album_key,
+                source,
+                image_path,
+                candidate.get('width'),
+                candidate.get('height'),
+                source_url,
+                candidate.get('source_detail') or '',
+                candidate.get('release_title') or '',
+                candidate.get('release_mbid') or '',
+                source_meta,
+                json.dumps(candidate.get('warnings') or []),
+                int(candidate.get('score') or 0),
+                candidate.get('score_summary') or '',
+                candidate.get('candidate_state') or 'available',
+                candidate.get('state_reason') or 'Downloaded and ready for review',
+                state_now,
+                state_now,
+            ),
+        )
+        return int(conn.execute('SELECT last_insert_rowid()').fetchone()[0])
+
+
+def web_safe_filename(value: Any) -> str:
+    value = unicodedata.normalize('NFKD', str(value or '')).encode('ascii', 'ignore').decode('ascii')
+    value = re.sub(r'[^A-Za-z0-9._ -]+', '_', value).strip(' ._-')
+    value = re.sub(r'\s+', ' ', value)
+    return value[:140] or 'artwork'
+
+
+def web_word_set(value: Any) -> set[str]:
+    return {part for part in normalize_for_match(str(value or '')).split() if part}
+
+
+def web_text_matches(found: Any, wanted: Any, *, loose: bool = False) -> bool:
+    found_n = normalize_for_match(clean_album_name(str(found or '')))
+    wanted_n = normalize_for_match(clean_album_name(str(wanted or '')))
+    if not wanted_n:
+        return True
+    if not found_n:
+        return False
+    if found_n == wanted_n or wanted_n in found_n or found_n in wanted_n:
+        return True
+    found_words = web_word_set(found_n)
+    wanted_words = web_word_set(wanted_n)
+    if len(wanted_words) >= 2 and wanted_words.issubset(found_words):
+        return True
+    ratio = difflib.SequenceMatcher(None, found_n, wanted_n).ratio()
+    return ratio >= (0.78 if loose else 0.84)
+
+
+def web_artist_matches(found: Any, wanted: Any) -> bool:
+    if web_text_matches(found, wanted, loose=True):
+        return True
+    found_words = web_word_set(found)
+    wanted_words = web_word_set(wanted)
+    return bool(wanted_words and wanted_words.issubset(found_words))
+
+
+def web_year_matches(found_year: Any, wanted_year: Any) -> bool:
+    if not wanted_year or not found_year:
+        return True
+    try:
+        return abs(int(str(found_year)[:4]) - int(str(wanted_year)[:4])) <= 2
+    except Exception:
+        return True
+
+
+def web_release_matches(found_artist: Any, found_album: Any, found_year: Any, album: Dict[str, Any]) -> bool:
+    artist = album.get('search_artist') or album.get('artist') or ''
+    title = album.get('search_album') or album.get('album') or ''
+    wanted_year = album.get('year') or ''
+    if not web_text_matches(found_album, title, loose=True):
+        return False
+    if not web_artist_matches(found_artist, artist):
+        return False
+    return web_year_matches(found_year, wanted_year)
+
+
+def web_quality_for_image(path: Path, width: int, height: int, target_size: int) -> Dict[str, Any]:
+    warnings = []
+    score = 35
+    min_side = min(int(width or 0), int(height or 0))
+    max_side = max(int(width or 0), int(height or 0))
+    if width and height:
+        score += min(34, int((min_side / max(1, target_size)) * 34))
+    if width == height and width:
+        score += 18
+    else:
+        warnings.append('Not square')
+        score -= 12
+    if not scan_artwork_meets_target_size(width, height, target_size, target_tolerance('Relaxed')):
+        warnings.append(f'Below target {target_size}px')
+        score -= 18
+    if min_side and max_side and min_side < max(1, int(max_side * 0.85)):
+        warnings.append('Very rectangular')
+        score -= 8
+    try:
+        if path.stat().st_size < 55_000:
+            warnings.append('Small file')
+            score -= 6
+    except Exception:
+        pass
+    score = max(0, min(100, score))
+    summary = f'{width} x {height} - {score}/100'
+    return {'warnings': warnings, 'score': score, 'score_summary': summary}
+
+
+def web_http_json(session: requests.Session, url: str, timeout: int = 12) -> Dict[str, Any] | None:
+    for attempt in range(3):
+        try:
+            response = session.get(url, timeout=timeout)
+            if response.status_code in (429, 503):
+                time.sleep(1.2 * (attempt + 1))
+                continue
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            return data if isinstance(data, dict) else None
+        except Exception:
+            time.sleep(0.8 * (attempt + 1))
+    return None
+
+
+def web_candidate_extension(content_type: str, url: str) -> str:
+    ctype = (content_type or '').lower()
+    if 'png' in ctype:
+        return '.png'
+    if 'webp' in ctype:
+        return '.webp'
+    suffix = Path(urlparse(url).path).suffix.lower()
+    if suffix in IMAGE_EXTENSIONS:
+        return suffix
+    return '.jpg'
+
+
+def web_download_candidate_image(
+    session: requests.Session,
+    album: Dict[str, Any],
+    source: str,
+    source_detail: str,
+    image_url: str,
+    release_title: str,
+    release_mbid: str,
+    source_meta: Dict[str, Any],
+    settings: Dict[str, Any],
+    option_index: int,
+) -> Dict[str, Any] | None:
+    if not image_url:
+        return None
+    try:
+        response = session.get(image_url, timeout=20)
+    except Exception:
+        return None
+    if response.status_code != 200 or not response.content:
+        return None
+    dims = image_dimensions_from_bytes(response.content)
+    if not dims:
+        return None
+    width, height = int(dims[0] or 0), int(dims[1] or 0)
+    target = int(settings.get('preferred_artwork_size') or settings.get('scan_min_artwork_size') or 1000)
+    fetch_min = int(settings.get('scan_min_artwork_size') or target)
+    if not scan_artwork_meets_target_size(width, height, fetch_min, target_tolerance(settings.get('target_size_match_mode'))):
+        return None
+    album_key = str(album.get('album_key') or '')
+    dest_dir = TEMP_CANDIDATE_DIR / album_key
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ext = web_candidate_extension(response.headers.get('Content-Type') or '', image_url)
+    base = web_safe_filename(f"{album.get('artist')} - {clean_album_name(album.get('album') or '')} - {source} - {option_index}")
+    dest = dest_dir / f'{base}{ext}'
+    counter = 1
+    while dest.exists():
+        dest = dest_dir / f'{base}_{counter}{ext}'
+        counter += 1
+    dest.write_bytes(response.content)
+    quality = web_quality_for_image(dest, width, height, target)
+    return {
+        'source': source,
+        'image_path': str(dest),
+        'width': width,
+        'height': height,
+        'source_url': image_url,
+        'source_detail': source_detail,
+        'release_title': release_title,
+        'release_mbid': release_mbid,
+        'source_meta': source_meta,
+        'warnings': quality['warnings'],
+        'score': quality['score'],
+        'score_summary': quality['score_summary'],
+    }
+
+
+def web_cleanup_candidate_file(candidate: Dict[str, Any]) -> None:
+    try:
+        path = web_data_path(candidate.get('image_path'))
+        if path.is_file():
+            path.unlink()
+    except Exception:
+        pass
+
+
+def web_deezer_candidates(album: Dict[str, Any], max_candidates: int, settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    session = requests.Session()
+    session.headers.update({'User-Agent': f'ArtworkManagerNAS/{WORKER_BUILD}', 'Accept': 'application/json'})
+    artist = album.get('search_artist') or album.get('artist') or ''
+    title = album.get('search_album') or album.get('album') or ''
+    term = quote_plus(' '.join(x for x in (artist, clean_album_name(title)) if x).strip())
+    if not term:
+        return []
+    data = web_http_json(session, f'https://api.deezer.com/search/album?q={term}&limit=15')
+    results = data.get('data') if isinstance(data, dict) else []
+    out: List[Dict[str, Any]] = []
+    seen_urls = set()
+    for item in results or []:
+        if len(out) >= max_candidates:
+            break
+        item_artist = ((item.get('artist') or {}) if isinstance(item.get('artist'), dict) else {}).get('name') or ''
+        item_title = item.get('title') or ''
+        item_year = str(item.get('release_date') or item.get('release_year') or '')[:4]
+        if not web_release_matches(item_artist, item_title, item_year, album):
+            continue
+        for detail, image_url in (
+            ('XL cover', item.get('cover_xl') or ''),
+            ('Large cover', item.get('cover_big') or ''),
+            ('Medium cover', item.get('cover_medium') or ''),
+        ):
+            if len(out) >= max_candidates:
+                break
+            if not image_url or image_url in seen_urls:
+                continue
+            seen_urls.add(image_url)
+            cand = web_download_candidate_image(
+                session,
+                album,
+                'Deezer',
+                detail,
+                image_url,
+                item_title + (f' ({item_year})' if item_year else ''),
+                f"deezer:{item.get('id')}" if item.get('id') else '',
+                {
+                    'source_artist': item_artist,
+                    'source_title': item_title,
+                    'source_year': item_year,
+                    'source_page': item.get('link') or '',
+                    'explicit': item.get('explicit_lyrics'),
+                },
+                settings,
+                len(out) + 1,
+            )
+            if cand:
+                out.append(cand)
+    return out
+
+
+def web_itunes_artwork_variants(url: str) -> List[Tuple[str, str]]:
+    out = []
+    if not url:
+        return out
+    for size in (1400, 1200, 1000, 600):
+        variant = re.sub(r'\d+x\d+(bb|cc|bf|sr)?\.(jpg|jpeg|png|webp)$', f'{size}x{size}bb.\\2', url)
+        if variant == url:
+            variant = re.sub(r'\d+x\d+', f'{size}x{size}', url)
+        if variant and variant not in [v for _label, v in out]:
+            out.append((f'{size}px artwork', variant))
+    if url not in [v for _label, v in out]:
+        out.append(('API artwork', url))
+    return out
+
+
+def web_itunes_candidates(album: Dict[str, Any], max_candidates: int, settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    session = requests.Session()
+    session.headers.update({'User-Agent': f'ArtworkManagerNAS/{WORKER_BUILD}', 'Accept': 'application/json'})
+    artist = album.get('search_artist') or album.get('artist') or ''
+    title = album.get('search_album') or album.get('album') or ''
+    term = quote_plus(' '.join(x for x in (artist, clean_album_name(title)) if x).strip())
+    if not term:
+        return []
+    data = web_http_json(session, f'https://itunes.apple.com/search?term={term}&media=music&entity=album&limit=15')
+    results = data.get('results') if isinstance(data, dict) else []
+    out: List[Dict[str, Any]] = []
+    seen_urls = set()
+    for item in results or []:
+        if len(out) >= max_candidates:
+            break
+        if item.get('wrapperType') not in ('collection', None):
+            continue
+        item_artist = item.get('artistName') or ''
+        item_title = item.get('collectionName') or ''
+        release_date = item.get('releaseDate') or ''
+        item_year = str(release_date)[:4]
+        if not web_release_matches(item_artist, item_title, item_year, album):
+            continue
+        for detail, image_url in web_itunes_artwork_variants(item.get('artworkUrl100') or ''):
+            if len(out) >= max_candidates:
+                break
+            if not image_url or image_url in seen_urls:
+                continue
+            seen_urls.add(image_url)
+            cand = web_download_candidate_image(
+                session,
+                album,
+                'iTunes',
+                detail,
+                image_url,
+                item_title + (f' ({item_year})' if item_year else ''),
+                f"itunes:{item.get('collectionId')}" if item.get('collectionId') else '',
+                {
+                    'source_artist': item_artist,
+                    'source_title': item_title,
+                    'source_year': item_year,
+                    'release_date': release_date,
+                    'country': item.get('country') or '',
+                    'genre': item.get('primaryGenreName') or '',
+                    'track_count': item.get('trackCount') or '',
+                    'source_page': item.get('collectionViewUrl') or '',
+                },
+                settings,
+                len(out) + 1,
+            )
+            if cand:
+                out.append(cand)
+    return out
+
+
+def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job_id: str = '') -> Dict[str, Any]:
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    settings = web_get_settings()
+    target_total = web_int(max_candidates or settings.get('max_candidates_per_album'), 5, 1, 25)
+    existing = web_list_candidates(album_key, include_rejected=False)
+    if len(existing) >= target_total:
+        web_set_album_status(album_key, 'candidate_found', f'{len(existing)} artwork option(s) ready.')
+        return {'ok': True, 'candidate_count': len(existing), 'candidates': [web_public_candidate(c) for c in existing]}
+    web_set_album_status(album_key, 'searching', 'Searching Deezer and Apple artwork.')
+    update_job(job_id, label=f"Searching {album.get('artist')} — {album.get('album')}", candidate_count=len(existing))
+
+    providers = []
+    if web_bool(settings.get('deezer_enabled'), True):
+        providers.append(('Deezer', web_deezer_candidates))
+    if web_bool(settings.get('itunes_enabled'), True):
+        providers.append(('iTunes', web_itunes_candidates))
+    if not providers:
+        web_set_album_status(album_key, 'no_candidate', 'No artwork providers are enabled.')
+        return {'ok': True, 'candidate_count': len(existing), 'candidates': [web_public_candidate(c) for c in existing], 'message': 'No artwork providers are enabled.'}
+
+    provider_limit = max(1, target_total - len(existing))
+    fetched: List[Dict[str, Any]] = []
+    max_workers = max(1, min(len(providers), int(settings.get('parallel_provider_workers') or 2)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(provider, album, provider_limit, settings): name
+            for name, provider in providers
+        }
+        for future, name in list(futures.items()):
+            try:
+                items = future.result()
+            except Exception as exc:
+                update_job(job_id, last_provider_error=f'{name}: {exc}')
+                items = []
+            fetched.extend(items or [])
+            update_job(job_id, candidate_count=len(existing) + len(fetched), last_provider=name)
+
+    known_urls = {str(c.get('source_url') or '') for c in web_list_candidates(album_key, include_rejected=True)}
+    saved_ids = []
+    for cand in sorted(fetched, key=lambda item: int(item.get('score') or 0), reverse=True):
+        if web_active_candidate_count(album_key) >= target_total:
+            web_cleanup_candidate_file(cand)
+            continue
+        source_url = str(cand.get('source_url') or '')
+        if source_url and source_url in known_urls:
+            web_cleanup_candidate_file(cand)
+            continue
+        try:
+            cid = web_add_candidate(album_key, cand)
+            saved_ids.append(cid)
+            if source_url:
+                known_urls.add(source_url)
+        except Exception:
+            web_cleanup_candidate_file(cand)
+
+    candidates = web_list_candidates(album_key, include_rejected=False)
+    if candidates:
+        reason = f'{len(candidates)} artwork option(s) ready.'
+        web_set_album_status(album_key, 'candidate_found', reason, {'last_search_at': now(), 'last_search_saved': len(saved_ids)})
+    else:
+        reason = 'No suitable artwork found. Try Google Images or lower the minimum artwork size.'
+        web_set_album_status(album_key, 'no_candidate', reason, {'last_search_at': now(), 'last_search_saved': 0})
+    web_add_history(album_key, 'web_artwork_search', {'saved_candidate_ids': saved_ids, 'candidate_count': len(candidates)})
+    update_job(job_id, candidate_count=len(candidates), saved_candidate_ids=saved_ids)
+    return {'ok': True, 'candidate_count': len(candidates), 'saved_candidate_ids': saved_ids, 'candidates': [web_public_candidate(c) for c in candidates]}
+
+
+def start_web_artwork_search(payload: Dict[str, Any]) -> Dict[str, Any]:
+    album_key = str(payload.get('album_key') or '').strip()
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    job_id, started_mono, _album_folder = begin_job('artwork-search', {
+        'album_folder': album.get('album_path') or '',
+        'album_key': album_key,
+        'artist': album.get('artist') or '',
+        'album': album.get('album') or '',
+    })
+
+    def worker() -> None:
+        try:
+            result = web_search_artwork_for_album(album_key, max_candidates=payload.get('max_candidates'), job_id=job_id)
+            finish_job(job_id, started_mono, True, result=result)
+        except Exception as exc:
+            try:
+                web_set_album_status(album_key, 'needs_review', f'Artwork search failed: {exc}')
+            except Exception:
+                pass
+            finish_job(job_id, started_mono, False, error=str(exc))
+
+    threading.Thread(target=worker, name=f'ArtworkManagerSearch-{job_id}', daemon=True).start()
+    return {'ok': True, 'job_id': job_id, 'message': 'Artwork search started on the NAS.'}
+
+
+def web_approve_candidate(album_key: str, candidate_id: Any, job_id: str = '') -> Dict[str, Any]:
+    album = web_get_album(album_key)
+    candidate = web_get_candidate(candidate_id)
+    if not album:
+        raise ValueError('Album not found')
+    if not candidate or str(candidate.get('album_key') or '') != str(album_key):
+        raise ValueError('Candidate not found for this album')
+    if int(candidate.get('rejected') or 0):
+        raise ValueError('Candidate has already been rejected')
+    image_bytes, _mime = web_candidate_artwork(candidate_id)
+    settings = web_get_settings()
+    folder = safe_path(album.get('album_path') or '')
+    target = int(settings.get('preferred_artwork_size') or settings.get('scan_min_artwork_size') or 1000)
+    max_embed = int(settings.get('max_embedded_artwork_size') or target or 0)
+    update_job(job_id, label=f"Embedding {album.get('artist')} — {album.get('album')}")
+    result = embed_album_job({
+        'album_folder': str(folder),
+        'album_key': album_key,
+        'image_b64': base64.b64encode(image_bytes).decode('ascii'),
+        'backup': bool(settings.get('backup_before_embed')),
+        'save_folder_cover': bool(settings.get('save_approved_artwork_to_album_folder')),
+        'embed': True,
+        'max_artwork_size': max_embed or None,
+        'make_square': True,
+    })
+    failed = result.get('failed') or []
+    total = int(result.get('total') or 0)
+    updated = int(result.get('updated') or 0)
+    if total <= 0:
+        raise ValueError('No supported audio files found in this album folder')
+    deep_result = deep_check(folder, target, problem_files=False, tolerance=target_tolerance(settings.get('target_size_match_mode')))
+    deep = deep_result.get('deep_file_check') or {}
+    ok = bool(updated and not failed and not deep.get('requires_action'))
+    status = 'approved' if ok else 'incompatible_artwork'
+    if ok:
+        reason = f'Embedded {updated}/{total} tracks.'
+    elif failed:
+        reason = f'Updated {updated}/{total} tracks; {len(failed)} file(s) failed.'
+    else:
+        reason = deep_check_summary(deep) or 'Artwork embedded, but a follow-up check still found an issue.'
+    notes_update = {
+        'status_reason': reason,
+        'deep_file_check': deep,
+        'last_approval': {
+            'candidate_id': int(candidate_id),
+            'source': candidate.get('source') or '',
+            'score': int(candidate.get('score') or 0),
+            'width': candidate.get('width'),
+            'height': candidate.get('height'),
+            'updated': updated,
+            'total': total,
+            'approved_at': now(),
+        },
+    }
+    with db_connect() as conn:
+        row = conn.execute('SELECT notes FROM albums WHERE album_key=?', (album_key,)).fetchone()
+        notes = web_decode_notes(row['notes']) if row else {}
+        notes.update(notes_update)
+        conn.execute(
+            'UPDATE albums SET status=?, width=?, height=?, notes=?, last_scanned=? WHERE album_key=?',
+            (
+                status,
+                result.get('image_width') or candidate.get('width'),
+                result.get('image_height') or candidate.get('height'),
+                json.dumps(notes),
+                now(),
+                album_key,
+            ),
+        )
+    web_mark_candidate(candidate_id, approved=True, rejected=False, state_reason='Approved and embedded')
+    web_mark_album_candidates(album_key, rejected=True, except_candidate_id=candidate_id, state_reason='Superseded by approved artwork')
+    web_add_history(album_key, 'web_approve_embed', {'candidate_id': int(candidate_id), 'result': result, 'deep_file_check': deep})
+    return {
+        'ok': ok,
+        'status': status,
+        'reason': reason,
+        'result': result,
+        'deep_file_check': deep,
+        'album': web_get_album(album_key),
+    }
+
+
+def start_web_approve(payload: Dict[str, Any]) -> Dict[str, Any]:
+    album_key = str(payload.get('album_key') or '').strip()
+    candidate_id = payload.get('candidate_id')
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    job_id, started_mono, _album_folder = begin_job('approve-embed', {
+        'album_folder': album.get('album_path') or '',
+        'album_key': album_key,
+        'artist': album.get('artist') or '',
+        'album': album.get('album') or '',
+    })
+
+    def worker() -> None:
+        try:
+            result = web_approve_candidate(album_key, candidate_id, job_id=job_id)
+            finish_job(job_id, started_mono, True, result=result)
+        except Exception as exc:
+            finish_job(job_id, started_mono, False, error=str(exc))
+
+    threading.Thread(target=worker, name=f'ArtworkManagerApprove-{job_id}', daemon=True).start()
+    return {'ok': True, 'job_id': job_id, 'message': 'Approve and embed started on the NAS.'}
+
+
+def web_reject_candidate(payload: Dict[str, Any]) -> Dict[str, Any]:
+    album_key = str(payload.get('album_key') or '').strip()
+    candidate_id = payload.get('candidate_id')
+    candidate = web_get_candidate(candidate_id)
+    if not candidate or str(candidate.get('album_key') or '') != album_key:
+        raise ValueError('Candidate not found for this album')
+    web_mark_candidate(candidate_id, approved=False, rejected=True, state_reason='Rejected in web app')
+    remaining = web_active_candidate_count(album_key)
+    if remaining:
+        web_set_album_status(album_key, 'candidate_found', f'{remaining} artwork option(s) ready.')
+    else:
+        web_set_album_status(album_key, 'no_candidate', 'No saved artwork options left.')
+    web_add_history(album_key, 'web_reject_candidate', {'candidate_id': int(candidate_id), 'remaining_candidates': remaining})
+    return {'ok': True, 'remaining_candidates': remaining, 'candidates': [web_public_candidate(c) for c in web_list_candidates(album_key)]}
+
+
+def web_album_simple_action(album_key: str, status: str, reason: str, action: str) -> Dict[str, Any]:
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    web_set_album_status(album_key, status, reason)
+    web_add_history(album_key, action, {'status': status, 'reason': reason})
+    return {'ok': True, 'album': web_get_album(album_key)}
 
 
 def web_current_artwork(album_key: str) -> Tuple[bytes, str]:
@@ -1995,6 +2899,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, web_query_albums(params))
             return
+        if route == '/api/candidates':
+            if not self._auth_ok():
+                self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            album_key = (params.get('album_key') or [''])[0]
+            include_rejected = web_bool((params.get('include_rejected') or ['false'])[0], False)
+            candidates = [web_public_candidate(c) for c in web_list_candidates(album_key, include_rejected=include_rejected)]
+            self._send(200, {'ok': True, 'album_key': album_key, 'candidates': candidates, 'candidate_count': len(candidates)})
+            return
         if route == '/api/artwork/current':
             if not self._auth_ok():
                 self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
@@ -2002,6 +2915,18 @@ class Handler(BaseHTTPRequestHandler):
             album_key = (params.get('album_key') or [''])[0]
             try:
                 data, mime = web_current_artwork(album_key)
+            except Exception as exc:
+                self._send(404, {'ok': False, 'error': str(exc), 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            self._send_bytes(200, data, mime)
+            return
+        if route == '/api/artwork/candidate':
+            if not self._auth_ok():
+                self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            candidate_id = (params.get('candidate_id') or [''])[0]
+            try:
+                data, mime = web_candidate_artwork(candidate_id)
             except Exception as exc:
                 self._send(404, {'ok': False, 'error': str(exc), 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
                 return
@@ -2036,6 +2961,28 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if route == '/api/scan/start':
                 result = start_web_scan(payload)
+                self._send(200, result)
+                return
+            if route == '/api/artwork/search':
+                result = start_web_artwork_search(payload)
+                self._send(200, result)
+                return
+            if route == '/api/artwork/approve':
+                result = start_web_approve(payload)
+                self._send(200, result)
+                return
+            if route == '/api/artwork/reject':
+                result = web_reject_candidate(payload)
+                self._send(200, result)
+                return
+            if route == '/api/album/skip':
+                album_key = str(payload.get('album_key') or '').strip()
+                result = web_album_simple_action(album_key, 'reviewed_skipped', 'Skipped for now.', 'web_skip_album')
+                self._send(200, result)
+                return
+            if route == '/api/album/mark-good':
+                album_key = str(payload.get('album_key') or '').strip()
+                result = web_album_simple_action(album_key, 'already_good', 'Marked good.', 'web_mark_good')
                 self._send(200, result)
                 return
             if route == '/path-check':

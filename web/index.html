@@ -64,11 +64,12 @@
                   <th>Artist</th>
                   <th>Album</th>
                   <th>Size</th>
+                  <th>Opts</th>
                 </tr>
               </thead>
               <tbody id="albumRows">
                 <tr>
-                  <td colspan="4" class="empty">No albums loaded.</td>
+                  <td colspan="5" class="empty">No albums loaded.</td>
                 </tr>
               </tbody>
             </table>
@@ -94,6 +95,20 @@
               <p id="coverMeta">No cover selected.</p>
             </section>
 
+            <section class="art-panel">
+              <div class="candidate-head">
+                <h3>Candidate</h3>
+                <span id="candidatePosition">0 of 0</span>
+              </div>
+              <div class="cover-box">
+                <img id="candidateCover" alt="">
+                <span id="candidatePlaceholder">No candidate</span>
+              </div>
+              <p id="candidateMeta">Find artwork to see options.</p>
+            </section>
+          </div>
+
+          <div class="review-bottom">
             <section class="notes-panel">
               <h3>Summary</h3>
               <p id="summaryLead" class="summary-lead">Select an album to review.</p>
@@ -115,6 +130,26 @@
                   <dd id="detailChecked">-</dd>
                 </div>
               </dl>
+            </section>
+
+            <section class="actions-panel">
+              <h3>Actions</h3>
+              <p id="actionMessage">Select an album to begin.</p>
+              <div class="action-row primary-actions">
+                <button id="findArtworkBtn" class="primary" type="button">Find Artwork</button>
+                <button id="approveEmbedBtn" class="success" type="button">Approve + Embed</button>
+              </div>
+              <div class="action-row">
+                <button id="prevCandidateBtn" class="ghost" type="button">Previous</button>
+                <button id="nextCandidateBtn" class="ghost" type="button">Next</button>
+                <button id="rejectCandidateBtn" class="ghost danger-text" type="button">Reject Option</button>
+              </div>
+              <div class="action-row quiet-actions">
+                <button id="openSourceBtn" class="ghost" type="button">Open Source</button>
+                <button id="googleImagesBtn" class="ghost" type="button">Google Images</button>
+                <button id="markGoodBtn" class="ghost" type="button">Mark Good</button>
+                <button id="skipAlbumBtn" class="ghost" type="button">Skip</button>
+              </div>
             </section>
           </div>
         </section>
@@ -222,6 +257,24 @@
               <div class="switch-list">
                 <label><input id="settingSaveFolder" name="save_approved_artwork_to_album_folder" type="checkbox"> Save cover.jpg in album folder</label>
                 <label><input id="settingBackupEmbed" name="backup_before_embed" type="checkbox"> Backup files before embed</label>
+              </div>
+            </div>
+
+            <div class="setting-card">
+              <h3>Artwork Search</h3>
+              <div class="switch-list">
+                <label><input id="settingDeezerEnabled" name="deezer_enabled" type="checkbox"> Search Deezer</label>
+                <label><input id="settingItunesEnabled" name="itunes_enabled" type="checkbox"> Search Apple/iTunes</label>
+              </div>
+              <div class="setting-grid">
+                <label class="setting-field">
+                  <span>Saved options per album</span>
+                  <input id="settingMaxCandidates" name="max_candidates_per_album" type="number" min="1" max="25" step="1">
+                </label>
+                <label class="setting-field">
+                  <span>Parallel providers</span>
+                  <input id="settingProviderWorkers" name="parallel_provider_workers" type="number" min="1" max="4" step="1">
+                </label>
               </div>
             </div>
           </section>

@@ -33,7 +33,7 @@ body {
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.42 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 button,
@@ -68,6 +68,16 @@ button:disabled {
   color: #fff;
 }
 
+.success {
+  border-color: var(--green);
+  background: var(--green);
+  color: #fff;
+}
+
+.danger-text {
+  color: var(--red);
+}
+
 .ghost {
   background: var(--surface);
 }
@@ -80,12 +90,12 @@ p {
 }
 
 h1 {
-  font-size: 20px;
+  font-size: 19px;
   letter-spacing: 0;
 }
 
 h2 {
-  font-size: 19px;
+  font-size: 18px;
   letter-spacing: 0;
 }
 
@@ -284,7 +294,7 @@ dt,
 }
 
 .queue-pane {
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .pane-head,
@@ -322,7 +332,7 @@ dt,
   padding: 0 9px;
   background: var(--surface-soft);
   color: #42526a;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .chip.active {
@@ -353,9 +363,9 @@ table {
 
 th,
 td {
-  height: 32px;
+  height: 29px;
   border-bottom: 1px solid var(--line-soft);
-  padding: 0 8px;
+  padding: 0 7px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -371,17 +381,23 @@ th {
 
 th:nth-child(1),
 td:nth-child(1) {
-  width: 92px;
+  width: 84px;
 }
 
 th:nth-child(2),
 td:nth-child(2) {
-  width: 29%;
+  width: 27%;
 }
 
 th:nth-child(4),
 td:nth-child(4) {
-  width: 96px;
+  width: 90px;
+  text-align: right;
+}
+
+th:nth-child(5),
+td:nth-child(5) {
+  width: 46px;
   text-align: right;
 }
 
@@ -445,9 +461,9 @@ tbody tr.selected {
 
 .review-grid {
   display: grid;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
-  grid-template-columns: minmax(330px, 0.9fr) minmax(330px, 1fr);
+  grid-template-columns: repeat(2, minmax(270px, 1fr));
   gap: 10px;
 }
 
@@ -468,7 +484,7 @@ tbody tr.selected {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  width: min(100%, 500px);
+  width: min(100%, 430px);
   aspect-ratio: 1 / 1;
   margin: 14px auto 10px;
   border: 1px dashed var(--line);
@@ -500,6 +516,59 @@ tbody tr.selected {
 
 .cover-box span {
   color: var(--muted);
+  font-weight: 700;
+}
+
+.candidate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.candidate-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.review-bottom {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-template-columns: minmax(320px, 1fr) minmax(300px, 0.85fr);
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.actions-panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px;
+}
+
+.actions-panel p {
+  min-height: 36px;
+  margin: 8px 0 12px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.primary-actions button {
+  min-width: 136px;
+}
+
+.quiet-actions button {
+  color: #42526a;
   font-weight: 700;
 }
 
@@ -720,7 +789,8 @@ dd {
   }
 
   .workspace,
-  .review-grid {
+  .review-grid,
+  .review-bottom {
     grid-template-columns: 1fr;
   }
 
