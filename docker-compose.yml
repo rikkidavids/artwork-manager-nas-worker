@@ -1,0 +1,15 @@
+services:
+  artwork-manager-worker:
+    image: ghcr.io/rikkidavids/artwork-manager-nas-worker:${AMW_IMAGE_TAG:-latest}
+    container_name: artwork-manager-worker
+    restart: unless-stopped
+    ports:
+      - "${AMW_HOST_PORT:-8765}:8765"
+    environment:
+      AMW_TOKEN: "${AMW_TOKEN:-change-me}"
+      AMW_MUSIC_ROOT: "/music"
+      AMW_BACKUP_DIR: "/backups"
+      AMW_RECENT_JOBS: "${AMW_RECENT_JOBS:-50}"
+    volumes:
+      - "${AMW_MUSIC_PATH:-/volume2/data/media/music}:/music:rw"
+      - "${AMW_BACKUP_PATH:-./backups}:/backups:rw"

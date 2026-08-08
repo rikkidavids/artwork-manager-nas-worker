@@ -1,0 +1,8 @@
+.git
+.github
+.env
+backups
+__pycache__
+*.pyc
+*.pyo
+.DS_Store
