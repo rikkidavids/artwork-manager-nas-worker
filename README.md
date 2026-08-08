@@ -2,7 +2,7 @@
 
 NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.11**
+Current worker build: **5.12**
 Worker API: **5**
 
 ## Why This Repo Exists
@@ -17,7 +17,7 @@ Synology Container Manager can then update the worker like a normal container im
 
 The publishing workflow template is included at `github-actions/docker-image.yml`. To activate image publishing, copy that file to `.github/workflows/docker-image.yml` in GitHub or push it from a Git token with `workflow` scope.
 
-Build 5.11 adds the first NAS web Settings screen, with Sonarr/Lidarr-style sections for library paths, scan behaviour, artwork rules, and browser token storage. Provider search and browser-based approve/embed are the next migration step.
+Build 5.12 cleans up the NAS web app around a Lidarr-inspired left sidebar, green command bar, compact queue counts, and the settings screen from 5.11. Provider search and browser-based approve/embed are the next migration step.
 
 ## Synology Setup
 
@@ -81,7 +81,7 @@ http://YOUR-NAS-IP:8765/app/
 Open the plain worker status at `http://YOUR-NAS-IP:8765/` without a browser UI check. You should see:
 
 ```text
-worker_build: "5.11"
+worker_build: "5.12"
 api: 5
 ```
 

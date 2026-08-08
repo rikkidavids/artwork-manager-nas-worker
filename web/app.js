@@ -291,7 +291,7 @@ async function refreshStatus() {
     }
     setCounts(counts);
     renderScan(status);
-    el.workerSummary.textContent = `NAS build ${status.worker_build || "-"} - API ${status.api || "-"} - ${shortPath((app.music_roots || [])[0] || "/music")}`;
+    el.workerSummary.textContent = `Build ${status.worker_build || "-"} / API ${status.api || "-"} / ${shortPath((app.music_roots || [])[0] || "/music")}`;
     return status;
   } catch (error) {
     el.workerSummary.textContent = error.message === "Token required" ? "Token required" : "Could not reach NAS app";

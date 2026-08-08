@@ -7,132 +7,164 @@
     <link rel="stylesheet" href="/app/styles.css">
   </head>
   <body>
-    <main class="shell">
-      <header class="topbar">
-        <div>
-          <h1>Artwork Manager</h1>
-          <p id="workerSummary">Connecting to NAS...</p>
-        </div>
-        <div class="top-actions">
-          <button id="refreshBtn" class="ghost" type="button">Refresh</button>
-          <button id="settingsBtn" class="ghost" type="button">Settings</button>
-          <button id="scanBtn" class="primary" type="button">Scan Library</button>
-        </div>
-      </header>
-
-      <section id="unlockPanel" class="unlock-panel hidden">
-        <div>
-          <h2>Connection Locked</h2>
-          <p>Open Settings and enter the NAS token for this browser.</p>
-        </div>
-        <button id="unlockSettingsBtn" class="primary" type="button">Open Settings</button>
-      </section>
-
-      <section class="summary-grid" aria-label="Library summary">
-        <div class="metric">
-          <span>All</span>
-          <strong id="countAll">0</strong>
-        </div>
-        <div class="metric">
-          <span>Needs Work</span>
-          <strong id="countNeeds">0</strong>
-        </div>
-        <div class="metric">
-          <span>Review</span>
-          <strong id="countReview">0</strong>
-        </div>
-        <div class="metric">
-          <span>Done</span>
-          <strong id="countDone">0</strong>
-        </div>
-      </section>
-
-      <section id="scanPanel" class="scan-panel hidden">
-        <div class="scan-copy">
-          <strong id="scanTitle">Scan running</strong>
-          <span id="scanText">Preparing scan...</span>
-        </div>
-        <div class="scan-track">
-          <div id="scanBar" class="scan-bar"></div>
-        </div>
-      </section>
-
-      <section class="workspace">
-        <aside class="queue-pane">
-          <div class="pane-head">
-            <h2>Queue</h2>
-            <span id="shownCount">0 shown</span>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">AM</div>
+          <div>
+            <strong>Artwork Manager</strong>
+            <span>NAS</span>
           </div>
-          <input id="searchInput" class="search" type="search" placeholder="Search artist, album, folder...">
-          <div class="chips" role="tablist" aria-label="Queue filters">
-            <button class="chip active" type="button" data-bucket="All">All</button>
-            <button class="chip" type="button" data-bucket="Needs Work">Needs Work</button>
-            <button class="chip" type="button" data-bucket="Review">Review</button>
-            <button class="chip" type="button" data-bucket="Done">Done</button>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Status</th>
-                  <th>Artist</th>
-                  <th>Album</th>
-                  <th>Size</th>
-                </tr>
-              </thead>
-              <tbody id="albumRows">
-                <tr>
-                  <td colspan="4" class="empty">No albums loaded.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </aside>
+        </div>
 
-        <section class="detail-pane">
-          <div class="detail-head">
-            <div>
-              <h2 id="albumTitle">No album selected</h2>
-              <p id="albumPath">Scan the library or choose an album.</p>
-            </div>
-            <span id="albumStatus" class="status-pill">Idle</span>
+        <nav class="side-nav" aria-label="Main navigation">
+          <button class="side-link active" type="button">
+            <span class="side-dot"></span>
+            <span>Queue</span>
+          </button>
+          <button id="scanBtn" class="side-link" type="button">
+            <span class="side-dot"></span>
+            <span>Scan Library</span>
+          </button>
+          <button id="settingsBtn" class="side-link" type="button">
+            <span class="side-dot"></span>
+            <span>Settings</span>
+          </button>
+        </nav>
+
+        <section class="side-counts" aria-label="Library summary">
+          <div>
+            <span>All</span>
+            <strong id="countAll">0</strong>
           </div>
-
-          <div class="review-grid">
-            <section class="art-panel">
-              <h3>Current</h3>
-              <div class="cover-box">
-                <img id="currentCover" alt="">
-                <span id="coverPlaceholder">No artwork</span>
-              </div>
-              <p id="coverMeta">No cover selected.</p>
-            </section>
-
-            <section class="notes-panel">
-              <h3>Summary</h3>
-              <dl>
-                <div>
-                  <dt>Status</dt>
-                  <dd id="detailStatus">-</dd>
-                </div>
-                <div>
-                  <dt>Why</dt>
-                  <dd id="detailReason">-</dd>
-                </div>
-                <div>
-                  <dt>Tracks</dt>
-                  <dd id="detailTracks">-</dd>
-                </div>
-                <div>
-                  <dt>Last checked</dt>
-                  <dd id="detailChecked">-</dd>
-                </div>
-              </dl>
-            </section>
+          <div>
+            <span>Needs Work</span>
+            <strong id="countNeeds">0</strong>
+          </div>
+          <div>
+            <span>Review</span>
+            <strong id="countReview">0</strong>
+          </div>
+          <div>
+            <span>Done</span>
+            <strong id="countDone">0</strong>
           </div>
         </section>
-      </section>
-    </main>
+
+        <div class="side-footer">
+          <span>Worker</span>
+          <strong id="workerSummary">Connecting to NAS...</strong>
+        </div>
+      </aside>
+
+      <main class="main-shell">
+        <header class="commandbar">
+          <label class="global-search">
+            <span>Search</span>
+            <input id="searchInput" type="search" placeholder="Artist, album, or folder">
+          </label>
+          <div class="command-actions">
+            <button id="refreshBtn" class="bar-button" type="button">Refresh</button>
+          </div>
+        </header>
+
+        <section id="unlockPanel" class="unlock-panel hidden">
+          <div>
+            <h2>Connection Locked</h2>
+            <p>Enter your NAS token in Settings to unlock this browser.</p>
+          </div>
+          <button id="unlockSettingsBtn" class="primary" type="button">Open Settings</button>
+        </section>
+
+        <section id="scanPanel" class="scan-panel hidden">
+          <div class="scan-copy">
+            <strong id="scanTitle">Scan running</strong>
+            <span id="scanText">Preparing scan...</span>
+          </div>
+          <div class="scan-track">
+            <div id="scanBar" class="scan-bar"></div>
+          </div>
+        </section>
+
+        <section class="workspace">
+          <aside class="queue-pane">
+            <div class="pane-head">
+              <div>
+                <h1>Queue</h1>
+                <p>Albums waiting for artwork checks.</p>
+              </div>
+              <span id="shownCount">0 shown</span>
+            </div>
+            <div class="chips" role="tablist" aria-label="Queue filters">
+              <button class="chip active" type="button" data-bucket="All">All</button>
+              <button class="chip" type="button" data-bucket="Needs Work">Needs Work</button>
+              <button class="chip" type="button" data-bucket="Review">Review</button>
+              <button class="chip" type="button" data-bucket="Done">Done</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Artist</th>
+                    <th>Album</th>
+                    <th>Size</th>
+                  </tr>
+                </thead>
+                <tbody id="albumRows">
+                  <tr>
+                    <td colspan="4" class="empty">No albums loaded.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </aside>
+
+          <section class="detail-pane">
+            <div class="detail-head">
+              <div>
+                <h2 id="albumTitle">No album selected</h2>
+                <p id="albumPath">Scan the library or choose an album.</p>
+              </div>
+              <span id="albumStatus" class="status-pill">Idle</span>
+            </div>
+
+            <div class="review-grid">
+              <section class="art-panel">
+                <h3>Current</h3>
+                <div class="cover-box">
+                  <img id="currentCover" alt="">
+                  <span id="coverPlaceholder">No artwork</span>
+                </div>
+                <p id="coverMeta">No cover selected.</p>
+              </section>
+
+              <section class="notes-panel">
+                <h3>Summary</h3>
+                <dl>
+                  <div>
+                    <dt>Status</dt>
+                    <dd id="detailStatus">-</dd>
+                  </div>
+                  <div>
+                    <dt>Why</dt>
+                    <dd id="detailReason">-</dd>
+                  </div>
+                  <div>
+                    <dt>Tracks</dt>
+                    <dd id="detailTracks">-</dd>
+                  </div>
+                  <div>
+                    <dt>Last checked</dt>
+                    <dd id="detailChecked">-</dd>
+                  </div>
+                </dl>
+              </section>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
 
     <div id="settingsOverlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
       <section class="settings-window">
