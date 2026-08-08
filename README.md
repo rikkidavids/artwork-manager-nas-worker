@@ -2,8 +2,8 @@
 
 NAS-local Docker worker for Artwork Manager. The Mac app stays as the review UI, while scan, embed, convert/save, and deep-check work happens on the NAS-local filesystem instead of through SMB/VPN.
 
-Current worker build: **5.04**  
-Worker API: **3**
+Current worker build: **5.05**
+Worker API: **4**
 
 ## Why This Repo Exists
 
@@ -16,6 +16,8 @@ ghcr.io/rikkidavids/artwork-manager-nas-worker:latest
 Synology Container Manager can then update the worker like a normal container image. GitHub builds the image; the NAS only pulls and restarts it.
 
 The publishing workflow template is included at `github-actions/docker-image.yml`. To activate image publishing, copy that file to `.github/workflows/docker-image.yml` in GitHub or push it from a Git token with `workflow` scope.
+
+Build 5.05 adds live scan progress in `/status`, so the Mac app can show NAS-side folder checks while a library scan is still running.
 
 ## Synology Setup
 
@@ -78,8 +80,8 @@ http://YOUR-NAS-IP:8765/
 You should see:
 
 ```text
-worker_build: "5.04"
-api: 3
+worker_build: "5.05"
+api: 4
 ```
 
 Optional token-protected check:

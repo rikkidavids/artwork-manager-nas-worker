@@ -30,17 +30,17 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.04'
-APP_BUILD = '5.04'
-WORKER_API = 3
-MINIMUM_MAC_APP_WORKER_API = 3
+WORKER_BUILD = '5.05'
+APP_BUILD = '5.05'
+WORKER_API = 4
+MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
 MUSIC_EXTENSIONS = ('.mp3', '.flac', '.m4a', '.mp4')
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Rebuild the project/image; do not only restart it. Build 5.04 adds NAS-local library scanning for VPN use.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.05 adds live NAS scan progress.'
 )
 
 
@@ -130,6 +130,7 @@ def begin_job(kind: str, payload: Dict[str, Any]) -> Tuple[str, float, str]:
         'album_folder': album_folder,
         'label': job_album_label(payload),
         'started_at': now(),
+        '_started_mono': started_mono,
         'duration_seconds': 0.0,
         'ok': None,
     }
@@ -139,6 +140,19 @@ def begin_job(kind: str, payload: Dict[str, Any]) -> Tuple[str, float, str]:
         ACTIVE_ALBUMS.add(album_folder)
         ACTIVE_JOBS[job_id] = record
     return job_id, started_mono, album_folder
+
+
+def update_job(job_id: str, **fields: Any) -> None:
+    if not job_id:
+        return
+    with JOB_LOCK:
+        record = ACTIVE_JOBS.get(job_id)
+        if not record:
+            return
+        record.update(fields)
+        started = record.get('_started_mono') or 0.0
+        record['duration_seconds'] = duration_seconds(started)
+        record['updated_at'] = now()
 
 
 def finish_job(job_id: str, started_mono: float, ok: bool, result: Dict[str, Any] | None = None, error: str = '') -> Dict[str, Any]:
@@ -156,6 +170,7 @@ def finish_job(job_id: str, started_mono: float, ok: bool, result: Dict[str, Any
         album_folder = record.get('album_folder') or ''
         if album_folder:
             ACTIVE_ALBUMS.discard(album_folder)
+        record.pop('_started_mono', None)
         record.update(summary)
         record['ok'] = bool(ok)
         if error:
@@ -165,6 +180,21 @@ def finish_job(job_id: str, started_mono: float, ok: bool, result: Dict[str, Any
                 record['updated'] = result.get('updated')
             if 'total' in result:
                 record['total'] = result.get('total')
+            scan_keys = ('processed_albums', 'changed_albums', 'queued_albums', 'skipped_unchanged', 'fingerprints_backfilled')
+            if any(key in result for key in scan_keys):
+                for key in scan_keys:
+                    if key in result:
+                        record[key] = result.get(key)
+                progress = dict(record.get('scan_progress') or {})
+                progress.update({
+                    'phase': 'complete' if ok else 'failed',
+                    'processed_albums': result.get('processed_albums', progress.get('processed_albums', 0)),
+                    'changed_albums': result.get('changed_albums', progress.get('changed_albums', 0)),
+                    'queued_albums': result.get('queued_albums', progress.get('queued_albums', 0)),
+                    'skipped_unchanged': result.get('skipped_unchanged', progress.get('skipped_unchanged', 0)),
+                    'fingerprints_backfilled': result.get('fingerprints_backfilled', progress.get('fingerprints_backfilled', 0)),
+                })
+                record['scan_progress'] = progress
             if 'failed' in result:
                 try:
                     record['failed_count'] = len(result.get('failed') or [])
@@ -180,7 +210,12 @@ def finish_job(job_id: str, started_mono: float, ok: bool, result: Dict[str, Any
 
 def status_payload(public: bool = False) -> Dict[str, Any]:
     with JOB_LOCK:
-        active = [dict(v) for v in ACTIVE_JOBS.values()]
+        active = []
+        for value in ACTIVE_JOBS.values():
+            item = dict(value)
+            item['duration_seconds'] = duration_seconds(item.get('_started_mono') or 0.0)
+            item.pop('_started_mono', None)
+            active.append(item)
         recent = [dict(v) for v in list(RECENT_JOBS)]
     payload = {
         'ok': True,
@@ -1102,7 +1137,7 @@ def analyze_scan_album(
     }
 
 
-def scan_library_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+def scan_library_job(payload: Dict[str, Any], job_id: str = '') -> Dict[str, Any]:
     library_root = safe_path(payload.get('library_root') or '')
     if not library_root.is_dir():
         raise ValueError('Library root does not exist inside the container')
@@ -1138,8 +1173,62 @@ def scan_library_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     processed = 0
     skipped = 0
     backfilled = 0
+    queued = 0
+    changed = 0
+    last_action_label = ''
+    current_album_path = ''
+    progress_last = 0.0
+
+    def publish_progress(phase: str = 'scanning', force: bool = False) -> None:
+        nonlocal progress_last
+        if not job_id:
+            return
+        now_mono = time.monotonic()
+        if not force and now_mono - progress_last < 1.0:
+            return
+        progress_last = now_mono
+        progress = {
+            'phase': phase,
+            'processed_albums': processed,
+            'changed_albums': changed,
+            'queued_albums': queued,
+            'skipped_unchanged': skipped,
+            'fingerprints_backfilled': backfilled,
+            'pending_albums': len(pending),
+            'current_album_path': current_album_path,
+            'last_action_label': last_action_label,
+            'deep_scan': deep_scan,
+            'max_workers': max_workers,
+        }
+        update_job(
+            job_id,
+            scan_progress=progress,
+            processed_albums=processed,
+            changed_albums=changed,
+            queued_albums=queued,
+            skipped_unchanged=skipped,
+            fingerprints_backfilled=backfilled,
+            label=f'Scanning {library_root.name or library_root}',
+        )
+
+    def collect_done(done) -> None:
+        nonlocal queued, changed, last_action_label
+        for fut in done:
+            item = fut.result()
+            albums.append(item)
+            changed += 1
+            if item.get('requires_action'):
+                queued += 1
+                artist = str(item.get('artist') or '').strip()
+                album = str(item.get('album') or '').strip()
+                if artist and album:
+                    last_action_label = f'{artist} - {album}'
+                else:
+                    last_action_label = str(item.get('album_path') or '')
+            publish_progress('scanning', force=True)
 
     pending = set()
+    publish_progress('starting', force=True)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for root_text, dirs, files in os.walk(library_root):
             dirs[:] = sort_names(dirs)
@@ -1156,6 +1245,8 @@ def scan_library_job(payload: Dict[str, Any]) -> Dict[str, Any]:
             if max_albums and processed >= max_albums:
                 break
             processed += 1
+            current_album_path = str(album_path)
+            publish_progress('walking')
 
             existing = known_by_path.get(str(album_path)) or known_by_path.get(album_path_key)
             fingerprint = None
@@ -1165,6 +1256,7 @@ def scan_library_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                 if saved_fingerprint:
                     if fingerprint_matches(saved_fingerprint, fingerprint):
                         skipped += 1
+                        publish_progress('walking')
                         continue
                 else:
                     album_key = str(existing.get('album_key') or '')
@@ -1176,6 +1268,7 @@ def scan_library_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                             'scan_fingerprint': fingerprint,
                         })
                     backfilled += 1
+                    publish_progress('walking')
                     continue
             if fingerprint is None:
                 fingerprint = folder_music_fingerprint(folder, music)
@@ -1183,19 +1276,19 @@ def scan_library_job(payload: Dict[str, Any]) -> Dict[str, Any]:
             pending.add(executor.submit(analyze_scan_album, folder, library_root, files, music, fingerprint, settings))
             if len(pending) >= max_pending:
                 done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                for fut in done:
-                    albums.append(fut.result())
+                collect_done(done)
 
         while pending:
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
-            for fut in done:
-                albums.append(fut.result())
+            collect_done(done)
 
     albums.sort(key=lambda item: (str(item.get('artist') or '').lower(), str(item.get('album') or '').lower(), str(item.get('album_path') or '').lower()))
+    publish_progress('finishing', force=True)
     return {
         'library_root': str(library_root),
         'processed_albums': processed,
         'changed_albums': len(albums),
+        'queued_albums': queued,
         'skipped_unchanged': skipped,
         'fingerprints_backfilled': backfilled,
         'albums': albums,
@@ -1318,7 +1411,7 @@ class Handler(BaseHTTPRequestHandler):
                 scan_payload = dict(payload)
                 scan_payload['album_folder'] = scan_payload.get('library_root') or ''
                 job_id, started_mono, _album = begin_job('scan-library', scan_payload)
-                result = scan_library_job(payload)
+                result = scan_library_job(payload, job_id=job_id)
                 worker = finish_job(job_id, started_mono, True, result=result)
                 result['remote_worker'] = True
                 result['remote_worker_job_id'] = job_id
