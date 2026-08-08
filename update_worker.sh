@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+# Synology SSH sessions can start with a very small PATH, which makes Docker
+# look missing even when Container Manager is installed.
+PATH="/usr/local/bin:/usr/bin:/bin:/usr/syno/bin:/usr/syno/sbin:$PATH"
+export PATH
+
 cd "$(dirname "$0")"
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
@@ -44,4 +49,4 @@ echo
 echo "From your Mac, check:"
 echo "  http://YOUR-NAS-IP:8765/"
 echo
-echo "You should see worker_build 5.04 and api 3."
+echo "You should see worker_build 5.14 and api 5."
