@@ -28,6 +28,7 @@ const el = {
   shownCount: document.getElementById("shownCount"),
   searchInput: document.getElementById("searchInput"),
   albumRows: document.getElementById("albumRows"),
+  detailPane: document.getElementById("detailPane"),
   albumTitle: document.getElementById("albumTitle"),
   albumPath: document.getElementById("albumPath"),
   albumStatus: document.getElementById("albumStatus"),
@@ -35,6 +36,8 @@ const el = {
   coverPlaceholder: document.getElementById("coverPlaceholder"),
   coverMeta: document.getElementById("coverMeta"),
   candidateCover: document.getElementById("candidateCover"),
+  candidatePanel: document.getElementById("candidatePanel"),
+  candidateTitle: document.getElementById("candidateTitle"),
   candidatePlaceholder: document.getElementById("candidatePlaceholder"),
   candidateMeta: document.getElementById("candidateMeta"),
   candidatePosition: document.getElementById("candidatePosition"),
@@ -44,7 +47,11 @@ const el = {
   detailReason: document.getElementById("detailReason"),
   detailTracks: document.getElementById("detailTracks"),
   detailChecked: document.getElementById("detailChecked"),
+  actionsTitle: document.getElementById("actionsTitle"),
   actionMessage: document.getElementById("actionMessage"),
+  primaryActionRow: document.getElementById("primaryActionRow"),
+  candidateActionRow: document.getElementById("candidateActionRow"),
+  quietActionRow: document.getElementById("quietActionRow"),
   findArtworkBtn: document.getElementById("findArtworkBtn"),
   approveEmbedBtn: document.getElementById("approveEmbedBtn"),
   prevCandidateBtn: document.getElementById("prevCandidateBtn"),
@@ -132,6 +139,13 @@ function isDoneAlbum(album) {
   return album && (album.bucket === "Done" || (album.status_label || "").toLowerCase() === "good");
 }
 
+function workflowMode(album) {
+  if (!album) return "empty";
+  if (album.bucket === "Review" || album.status === "candidate_found") return "review";
+  if (isDoneAlbum(album)) return "done";
+  return "work";
+}
+
 function trackLabel(album) {
   const count = Number(album?.track_count || 0);
   if (!count) return "tracks unchecked";
@@ -166,6 +180,19 @@ function selectedAlbum() {
 
 function selectedCandidate() {
   return state.candidates[state.candidateIndex] || null;
+}
+
+function idleActionMessage(album = selectedAlbum()) {
+  if (!album) return "Select an album to begin.";
+  const mode = workflowMode(album);
+  if (mode === "done") return "Nothing needed. Search again only if you want a different cover.";
+  if (mode === "review" && selectedCandidate()) return "Review this cover, then approve or reject it.";
+  if (mode === "review") return "Search again to add cover options.";
+  return "Find artwork, then approve the best cover.";
+}
+
+function setVisible(node, visible) {
+  node.classList.toggle("hidden", !visible);
 }
 
 function candidateLabel(candidate) {
@@ -370,13 +397,43 @@ function renderScan(status) {
 function updateActionButtons() {
   const album = selectedAlbum();
   const candidate = selectedCandidate();
+  const mode = workflowMode(album);
   const busy = Boolean(state.actionActive);
   const hasCandidate = Boolean(candidate);
   const sourceUrl = candidate?.source_page || candidate?.source_url || "";
-  el.findArtworkBtn.disabled = !album || busy;
+  const hasAlbum = Boolean(album);
+  const canNavigateCandidates = hasAlbum && state.candidates.length > 1 && !busy;
+  const showCandidateActions = hasCandidate || mode === "review";
+  const showAlbumTools = hasAlbum && (sourceUrl || mode !== "empty");
+  const compactCandidate = (mode === "done" || mode === "empty") && !hasCandidate;
+
+  el.detailPane.classList.remove("mode-empty", "mode-work", "mode-review", "mode-done");
+  el.detailPane.classList.add(`mode-${mode}`);
+  el.candidatePanel.classList.toggle("compact", compactCandidate);
+  el.candidateTitle.textContent = mode === "done" ? "Replacement Cover" : "Candidate";
+  el.candidatePosition.classList.toggle("hidden", compactCandidate);
+  el.actionsTitle.textContent = "Next Step";
+  el.findArtworkBtn.textContent = mode === "done" ? "Search Again" : "Find Artwork";
+  el.findArtworkBtn.classList.toggle("primary", mode !== "done");
+  el.findArtworkBtn.classList.toggle("ghost", mode === "done");
+
+  setVisible(el.primaryActionRow, hasAlbum);
+  setVisible(el.findArtworkBtn, hasAlbum);
+  setVisible(el.approveEmbedBtn, mode !== "done" || hasCandidate);
+  setVisible(el.candidateActionRow, showCandidateActions);
+  setVisible(el.prevCandidateBtn, state.candidates.length > 1);
+  setVisible(el.nextCandidateBtn, state.candidates.length > 1);
+  setVisible(el.rejectCandidateBtn, hasCandidate);
+  setVisible(el.quietActionRow, showAlbumTools);
+  setVisible(el.openSourceBtn, Boolean(sourceUrl));
+  setVisible(el.googleImagesBtn, hasAlbum);
+  setVisible(el.markGoodBtn, hasAlbum && mode !== "done");
+  setVisible(el.skipAlbumBtn, hasAlbum && mode !== "done");
+
+  el.findArtworkBtn.disabled = !hasAlbum || busy;
   el.approveEmbedBtn.disabled = !album || !hasCandidate || busy;
-  el.prevCandidateBtn.disabled = !album || state.candidates.length < 2 || busy;
-  el.nextCandidateBtn.disabled = !album || state.candidates.length < 2 || busy;
+  el.prevCandidateBtn.disabled = !canNavigateCandidates;
+  el.nextCandidateBtn.disabled = !canNavigateCandidates;
   el.rejectCandidateBtn.disabled = !album || !hasCandidate || busy;
   el.openSourceBtn.disabled = !sourceUrl;
   el.googleImagesBtn.disabled = !album;
@@ -451,8 +508,20 @@ async function refreshQueue() {
   const params = new URLSearchParams({ bucket: state.bucket, q: state.query, limit: "500" });
   try {
     const payload = await api(`/api/albums?${params}`);
-    state.albums = payload.albums || [];
-    setCounts(payload.counts || {});
+    const counts = payload.counts || {};
+    const albums = payload.albums || [];
+    if (!state.query && !albums.length && state.bucket === "Review" && Number(counts["Needs Work"] || 0) > 0) {
+      state.bucket = "Needs Work";
+      localStorage.setItem("amwBucket", state.bucket);
+      return refreshQueue();
+    }
+    if (!state.query && !albums.length && state.bucket === "Needs Work" && Number(counts["Review"] || 0) > 0) {
+      state.bucket = "Review";
+      localStorage.setItem("amwBucket", state.bucket);
+      return refreshQueue();
+    }
+    state.albums = albums;
+    setCounts(counts);
     if (!state.albums.find((album) => album.album_key === state.selectedKey)) {
       state.selectedKey = state.albums[0]?.album_key || "";
     }
@@ -525,11 +594,19 @@ async function loadCandidateCover(candidate) {
 
 function renderCandidate() {
   const candidate = selectedCandidate();
+  const album = selectedAlbum();
+  const mode = workflowMode(album);
   el.candidatePosition.textContent = state.candidates.length ? `${state.candidateIndex + 1} of ${state.candidates.length}` : "0 of 0";
   if (!candidate) {
-    el.candidateMeta.textContent = selectedAlbum() ? "No saved cover options. Find artwork to start." : "Find artwork to see options.";
+    if (mode === "done") {
+      el.candidateMeta.textContent = "No replacement queued.";
+    } else if (album) {
+      el.candidateMeta.textContent = "No saved cover options. Find artwork to start.";
+    } else {
+      el.candidateMeta.textContent = "Find artwork to see options.";
+    }
     if (!state.actionActive) {
-      el.actionMessage.textContent = selectedAlbum() ? "Find artwork to save cover options." : "Select an album to begin.";
+      el.actionMessage.textContent = idleActionMessage(album);
     }
     loadCandidateCover(null);
     updateActionButtons();
@@ -538,7 +615,7 @@ function renderCandidate() {
   const warnings = Array.isArray(candidate.warnings) && candidate.warnings.length ? ` - ${candidate.warnings.slice(0, 2).join(", ")}` : "";
   el.candidateMeta.textContent = `${candidateLabel(candidate)}${warnings}`;
   if (!state.actionActive) {
-    el.actionMessage.textContent = "Choose a cover, then approve it.";
+    el.actionMessage.textContent = idleActionMessage(album);
   }
   loadCandidateCover(candidate);
   updateActionButtons();
@@ -601,8 +678,11 @@ function renderSelected() {
   el.detailTracks.textContent = trackLabel(album);
   el.detailChecked.textContent = formatDateTime(album.last_scanned);
   if (!state.actionActive) {
-    el.actionMessage.textContent = state.candidates.length ? "Choose a cover, then approve it." : "Find artwork to save cover options.";
+    el.actionMessage.textContent = idleActionMessage(album);
   }
+  state.candidates = [];
+  state.candidateIndex = 0;
+  renderCandidate();
   loadCover(album);
   refreshCandidates(album);
   updateActionButtons();

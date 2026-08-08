@@ -49,12 +49,14 @@
             </div>
             <span id="shownCount">0 shown</span>
           </div>
-          <input id="searchInput" class="search" type="search" placeholder="Search artist, album, folder...">
-          <div class="chips" role="tablist" aria-label="Queue filters">
-            <button class="chip active" type="button" data-bucket="All">All</button>
-            <button class="chip" type="button" data-bucket="Needs Work">Needs Work</button>
-            <button class="chip" type="button" data-bucket="Review">Review</button>
-            <button class="chip" type="button" data-bucket="Done">Done</button>
+          <div class="queue-controls">
+            <input id="searchInput" class="search" type="search" placeholder="Search artist, album, folder...">
+            <div class="chips" role="tablist" aria-label="Queue filters">
+              <button class="chip active" type="button" data-bucket="All">All</button>
+              <button class="chip" type="button" data-bucket="Needs Work">Needs Work</button>
+              <button class="chip" type="button" data-bucket="Review">Review</button>
+              <button class="chip" type="button" data-bucket="Done">Done</button>
+            </div>
           </div>
           <div class="table-wrap">
             <table>
@@ -76,7 +78,7 @@
           </div>
         </aside>
 
-        <section class="detail-pane">
+        <section id="detailPane" class="detail-pane">
           <div class="detail-head">
             <div>
               <h2 id="albumTitle">No album selected</h2>
@@ -86,7 +88,7 @@
           </div>
 
           <div class="review-grid">
-            <section class="art-panel">
+            <section id="currentPanel" class="art-panel">
               <h3>Current Cover</h3>
               <div class="cover-box">
                 <img id="currentCover" alt="">
@@ -95,9 +97,9 @@
               <p id="coverMeta">No cover selected.</p>
             </section>
 
-            <section class="art-panel">
+            <section id="candidatePanel" class="art-panel">
               <div class="candidate-head">
-                <h3>Candidate</h3>
+                <h3 id="candidateTitle">Candidate</h3>
                 <span id="candidatePosition">0 of 0</span>
               </div>
               <div class="cover-box">
@@ -133,18 +135,18 @@
             </section>
 
             <section class="actions-panel">
-              <h3>Actions</h3>
+              <h3 id="actionsTitle">Next Step</h3>
               <p id="actionMessage">Select an album to begin.</p>
-              <div class="action-row primary-actions">
+              <div id="primaryActionRow" class="action-row primary-actions">
                 <button id="findArtworkBtn" class="primary" type="button">Find Artwork</button>
                 <button id="approveEmbedBtn" class="success" type="button">Approve + Embed</button>
               </div>
-              <div class="action-row">
+              <div id="candidateActionRow" class="action-row">
                 <button id="prevCandidateBtn" class="ghost" type="button">Previous</button>
                 <button id="nextCandidateBtn" class="ghost" type="button">Next</button>
                 <button id="rejectCandidateBtn" class="ghost danger-text" type="button">Reject Option</button>
               </div>
-              <div class="action-row quiet-actions">
+              <div id="quietActionRow" class="action-row quiet-actions">
                 <button id="openSourceBtn" class="ghost" type="button">Open Source</button>
                 <button id="googleImagesBtn" class="ghost" type="button">Google Images</button>
                 <button id="markGoodBtn" class="ghost" type="button">Mark Good</button>
