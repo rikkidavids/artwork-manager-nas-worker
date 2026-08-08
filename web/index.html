@@ -86,7 +86,7 @@
 
           <div class="review-grid">
             <section class="art-panel">
-              <h3>Current Artwork</h3>
+              <h3>Current Cover</h3>
               <div class="cover-box">
                 <img id="currentCover" alt="">
                 <span id="coverPlaceholder">No artwork</span>
@@ -95,14 +95,15 @@
             </section>
 
             <section class="notes-panel">
-              <h3>Album Summary</h3>
-              <dl>
+              <h3>Summary</h3>
+              <p id="summaryLead" class="summary-lead">Select an album to review.</p>
+              <dl class="summary-list">
                 <div>
                   <dt>Status</dt>
                   <dd id="detailStatus">-</dd>
                 </div>
                 <div>
-                  <dt>Why</dt>
+                  <dt id="detailReasonLabel">Note</dt>
                   <dd id="detailReason">-</dd>
                 </div>
                 <div>
@@ -110,7 +111,7 @@
                   <dd id="detailTracks">-</dd>
                 </div>
                 <div>
-                  <dt>Last checked</dt>
+                  <dt>Checked</dt>
                   <dd id="detailChecked">-</dd>
                 </div>
               </dl>

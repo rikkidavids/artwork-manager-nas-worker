@@ -12,7 +12,9 @@
   --green: #07884f;
   --green-soft: #e6f5ee;
   --amber: #8a5a00;
+  --amber-soft: #fff5db;
   --red: #b42318;
+  --red-soft: #fdecec;
   --shadow: 0 14px 34px rgba(22, 32, 43, 0.08);
 }
 
@@ -329,6 +331,11 @@ dt,
   color: #0a4eaa;
 }
 
+.chip.quiet {
+  color: var(--muted);
+  background: #fff;
+}
+
 .table-wrap {
   flex: 1 1 auto;
   min-height: 0;
@@ -395,7 +402,8 @@ tbody tr.selected {
 }
 
 .status-cell.good {
-  color: var(--green);
+  color: #526172;
+  font-weight: 700;
 }
 
 .status-cell.work {
@@ -426,12 +434,12 @@ tbody tr.selected {
 }
 
 .status-pill.work {
-  background: #fff5db;
+  background: var(--amber-soft);
   color: var(--amber);
 }
 
 .status-pill.issue {
-  background: #fdecec;
+  background: var(--red-soft);
   color: var(--red);
 }
 
@@ -439,7 +447,7 @@ tbody tr.selected {
   display: grid;
   flex: 1 1 auto;
   min-height: 0;
-  grid-template-columns: minmax(320px, 0.92fr) minmax(330px, 1fr);
+  grid-template-columns: minmax(330px, 0.9fr) minmax(330px, 1fr);
   gap: 10px;
 }
 
@@ -450,11 +458,17 @@ tbody tr.selected {
   padding: 12px;
 }
 
+.art-panel {
+  display: flex;
+  flex-direction: column;
+}
+
 .cover-box {
   position: relative;
   display: grid;
+  flex: 0 0 auto;
   place-items: center;
-  width: min(100%, 510px);
+  width: min(100%, 500px);
   aspect-ratio: 1 / 1;
   margin: 14px auto 10px;
   border: 1px dashed var(--line);
@@ -473,6 +487,7 @@ tbody tr.selected {
 .cover-box.has-cover {
   border-style: solid;
   background: #fff;
+  box-shadow: 0 1px 2px rgba(22, 32, 43, 0.08);
 }
 
 .cover-box.has-cover img {
@@ -488,15 +503,40 @@ tbody tr.selected {
   font-weight: 700;
 }
 
-dl {
+.summary-lead {
+  margin-top: 12px;
+  border-radius: 7px;
+  background: var(--surface-soft);
+  color: #344156;
+  font-weight: 800;
+  line-height: 1.35;
+  padding: 10px 12px;
+}
+
+.summary-lead.good {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.summary-lead.work {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.summary-lead.issue {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.summary-list {
   display: grid;
   gap: 10px;
   margin: 14px 0 0;
 }
 
-dl div {
+.summary-list div {
   display: grid;
-  grid-template-columns: 100px minmax(0, 1fr);
+  grid-template-columns: 86px minmax(0, 1fr);
   gap: 10px;
 }
 

@@ -30,7 +30,9 @@ const el = {
   currentCover: document.getElementById("currentCover"),
   coverPlaceholder: document.getElementById("coverPlaceholder"),
   coverMeta: document.getElementById("coverMeta"),
+  summaryLead: document.getElementById("summaryLead"),
   detailStatus: document.getElementById("detailStatus"),
+  detailReasonLabel: document.getElementById("detailReasonLabel"),
   detailReason: document.getElementById("detailReason"),
   detailTracks: document.getElementById("detailTracks"),
   detailChecked: document.getElementById("detailChecked"),
@@ -104,9 +106,33 @@ function formatDateTime(value) {
   }).format(date);
 }
 
+function isDoneAlbum(album) {
+  return album && (album.bucket === "Done" || (album.status_label || "").toLowerCase() === "good");
+}
+
+function trackLabel(album) {
+  const count = Number(album?.track_count || 0);
+  if (!count) return "tracks unchecked";
+  return `${fmt(count)} ${count === 1 ? "track" : "tracks"}`;
+}
+
+function checkedLabel(album) {
+  const checked = formatDateTime(album?.last_scanned);
+  return checked === "-" ? "not checked yet" : `checked ${checked}`;
+}
+
+function summaryLead(album) {
+  if (!album) return "Select an album to review.";
+  if (isDoneAlbum(album)) return `Looks good - ${trackLabel(album)} - ${checkedLabel(album)}`;
+  if (album.bucket === "Review") return `Ready to review - ${trackLabel(album)} - ${checkedLabel(album)}`;
+  if (album.status === "missing_artwork") return `Missing artwork - ${trackLabel(album)} - ${checkedLabel(album)}`;
+  if (album.status === "incompatible_artwork") return `Needs a better cover - ${trackLabel(album)} - ${checkedLabel(album)}`;
+  return `Needs work - ${trackLabel(album)} - ${checkedLabel(album)}`;
+}
+
 function statusClass(album) {
   if (!album) return "";
-  if (album.bucket === "Done") return "good";
+  if (isDoneAlbum(album)) return "good";
   if (album.status === "missing_artwork" || album.status === "incompatible_artwork") return "issue";
   if (album.bucket === "Needs Work") return "work";
   return "";
@@ -118,6 +144,7 @@ function setCounts(counts = {}) {
     const count = counts[bucket] || 0;
     chip.textContent = `${bucket} ${fmt(count)}`;
     chip.classList.toggle("active", bucket === state.bucket);
+    chip.classList.toggle("quiet", bucket === "Done" && bucket !== state.bucket);
   });
 }
 
@@ -385,7 +412,10 @@ function renderSelected() {
     el.albumPath.textContent = "Scan the library or choose an album.";
     el.albumStatus.textContent = "Idle";
     el.albumStatus.className = "status-pill";
+    el.summaryLead.textContent = summaryLead(null);
+    el.summaryLead.className = "summary-lead";
     el.detailStatus.textContent = "-";
+    el.detailReasonLabel.textContent = "Note";
     el.detailReason.textContent = "-";
     el.detailTracks.textContent = "-";
     el.detailChecked.textContent = "-";
@@ -396,9 +426,12 @@ function renderSelected() {
   el.albumPath.textContent = shortPath(album.album_path);
   el.albumStatus.textContent = album.status_label || "";
   el.albumStatus.className = `status-pill ${statusClass(album)}`;
+  el.summaryLead.textContent = summaryLead(album);
+  el.summaryLead.className = `summary-lead ${statusClass(album)}`;
   el.detailStatus.textContent = album.status_label || "-";
-  el.detailReason.textContent = album.status_reason || "Nothing needed.";
-  el.detailTracks.textContent = album.track_count ? fmt(album.track_count) : "-";
+  el.detailReasonLabel.textContent = isDoneAlbum(album) ? "Next" : "Issue";
+  el.detailReason.textContent = isDoneAlbum(album) ? "No action needed." : album.status_reason || "Needs attention.";
+  el.detailTracks.textContent = trackLabel(album);
   el.detailChecked.textContent = formatDateTime(album.last_scanned);
   loadCover(album);
 }
