@@ -31,7 +31,7 @@ body {
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: 14px/1.42 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 button,
@@ -41,14 +41,14 @@ select {
 }
 
 button {
-  height: 38px;
+  height: 34px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
   font-weight: 700;
-  padding: 0 14px;
+  padding: 0 12px;
 }
 
 button:hover {
@@ -78,17 +78,17 @@ p {
 }
 
 h1 {
-  font-size: 21px;
+  font-size: 20px;
   letter-spacing: 0;
 }
 
 h2 {
-  font-size: 21px;
+  font-size: 19px;
   letter-spacing: 0;
 }
 
 h3 {
-  font-size: 17px;
+  font-size: 15px;
   letter-spacing: 0;
 }
 
@@ -98,7 +98,7 @@ h3 {
 
 input,
 select {
-  height: 38px;
+  height: 34px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--surface);
@@ -135,10 +135,10 @@ input[readonly] {
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  min-height: 64px;
+  min-height: 58px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
-  padding: 0 18px;
+  padding: 0 16px;
 }
 
 .app-title {
@@ -151,8 +151,8 @@ input[readonly] {
 .brand-mark {
   display: grid;
   flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   place-items: center;
   border-radius: 9px;
   background: var(--green);
@@ -165,7 +165,6 @@ input[readonly] {
 .pane-head p,
 .detail-head p,
 .scan-copy span,
-.count-strip span,
 dt,
 #coverMeta {
   color: var(--muted);
@@ -183,38 +182,6 @@ dt,
   flex: 0 0 auto;
   align-items: center;
   gap: 8px;
-}
-
-.count-strip {
-  display: grid;
-  flex: 0 0 auto;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1px;
-  border-bottom: 1px solid var(--line);
-  background: var(--line);
-}
-
-.count-strip div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-width: 0;
-  min-height: 42px;
-  background: var(--surface-soft);
-  padding: 0 18px;
-}
-
-.count-strip span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 700;
-}
-
-.count-strip strong {
-  color: var(--text);
-  font-size: 19px;
 }
 
 .unlock-panel,
@@ -291,8 +258,8 @@ dt,
   flex: 1 1 auto;
   min-height: 0;
   grid-template-columns: minmax(460px, 0.88fr) minmax(560px, 1.25fr);
-  gap: 14px;
-  padding: 14px 16px 16px;
+  gap: 12px;
+  padding: 12px 14px 14px;
   overflow: hidden;
 }
 
@@ -311,7 +278,11 @@ dt,
   display: flex;
   min-height: 0;
   flex-direction: column;
-  padding: 14px;
+  padding: 12px;
+}
+
+.queue-pane {
+  font-size: 13px;
 }
 
 .pane-head,
@@ -320,33 +291,36 @@ dt,
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 #shownCount {
   flex: 0 0 auto;
   color: var(--muted);
+  font-size: 13px;
   font-weight: 800;
 }
 
 .search {
   width: 100%;
-  margin-bottom: 10px;
+  height: 32px;
+  margin-bottom: 8px;
 }
 
 .chips {
   display: flex;
   flex: 0 0 auto;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 6px;
+  margin-bottom: 10px;
 }
 
 .chip {
-  height: 32px;
-  padding: 0 10px;
+  height: 28px;
+  padding: 0 9px;
   background: var(--surface-soft);
   color: #42526a;
+  font-size: 13px;
 }
 
 .chip.active {
@@ -365,16 +339,16 @@ dt,
 
 table {
   width: 100%;
-  min-width: 620px;
+  min-width: 0;
   border-collapse: collapse;
   table-layout: fixed;
 }
 
 th,
 td {
-  height: 38px;
+  height: 32px;
   border-bottom: 1px solid var(--line-soft);
-  padding: 0 10px;
+  padding: 0 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -390,17 +364,17 @@ th {
 
 th:nth-child(1),
 td:nth-child(1) {
-  width: 108px;
+  width: 92px;
 }
 
 th:nth-child(2),
 td:nth-child(2) {
-  width: 28%;
+  width: 29%;
 }
 
 th:nth-child(4),
 td:nth-child(4) {
-  width: 112px;
+  width: 96px;
   text-align: right;
 }
 
@@ -414,6 +388,22 @@ tbody tr:hover {
 
 tbody tr.selected {
   background: #dceeff;
+}
+
+.status-cell {
+  font-weight: 800;
+}
+
+.status-cell.good {
+  color: var(--green);
+}
+
+.status-cell.work {
+  color: var(--amber);
+}
+
+.status-cell.issue {
+  color: var(--red);
 }
 
 .empty {
@@ -450,14 +440,14 @@ tbody tr.selected {
   flex: 1 1 auto;
   min-height: 0;
   grid-template-columns: minmax(320px, 0.92fr) minmax(330px, 1fr);
-  gap: 12px;
+  gap: 10px;
 }
 
 .art-panel,
 .notes-panel {
   min-height: 0;
   overflow: auto;
-  padding: 14px;
+  padding: 12px;
 }
 
 .cover-box {
@@ -466,7 +456,7 @@ tbody tr.selected {
   place-items: center;
   width: min(100%, 510px);
   aspect-ratio: 1 / 1;
-  margin: 16px auto 12px;
+  margin: 14px auto 10px;
   border: 1px dashed var(--line);
   border-radius: 8px;
   background: #fbfcfd;
@@ -500,14 +490,14 @@ tbody tr.selected {
 
 dl {
   display: grid;
-  gap: 12px;
-  margin: 16px 0 0;
+  gap: 10px;
+  margin: 14px 0 0;
 }
 
 dl div {
   display: grid;
-  grid-template-columns: 110px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 10px;
 }
 
 dt {
@@ -689,7 +679,6 @@ dd {
     flex-wrap: wrap;
   }
 
-  .count-strip,
   .workspace,
   .review-grid {
     grid-template-columns: 1fr;

@@ -18,10 +18,6 @@ const el = {
   scanBtn: document.getElementById("scanBtn"),
   unlockPanel: document.getElementById("unlockPanel"),
   unlockSettingsBtn: document.getElementById("unlockSettingsBtn"),
-  countAll: document.getElementById("countAll"),
-  countNeeds: document.getElementById("countNeeds"),
-  countReview: document.getElementById("countReview"),
-  countDone: document.getElementById("countDone"),
   scanPanel: document.getElementById("scanPanel"),
   scanTitle: document.getElementById("scanTitle"),
   scanText: document.getElementById("scanText"),
@@ -95,6 +91,19 @@ function shortPath(path) {
   return ".../" + bits.slice(-3).join("/");
 }
 
+function formatDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
 function statusClass(album) {
   if (!album) return "";
   if (album.bucket === "Done") return "good";
@@ -104,10 +113,6 @@ function statusClass(album) {
 }
 
 function setCounts(counts = {}) {
-  el.countAll.textContent = fmt(counts.All);
-  el.countNeeds.textContent = fmt(counts["Needs Work"]);
-  el.countReview.textContent = fmt(counts.Review);
-  el.countDone.textContent = fmt(counts.Done);
   document.querySelectorAll(".chip").forEach((chip) => {
     const bucket = chip.dataset.bucket;
     const count = counts[bucket] || 0;
@@ -291,7 +296,7 @@ async function refreshStatus() {
     }
     setCounts(counts);
     renderScan(status);
-    el.workerSummary.textContent = `Build ${status.worker_build || "-"} / API ${status.api || "-"} / ${shortPath((app.music_roots || [])[0] || "/music")}`;
+    el.workerSummary.textContent = `Build ${status.worker_build || "-"} - ${shortPath((app.music_roots || [])[0] || "/music")}`;
     return status;
   } catch (error) {
     el.workerSummary.textContent = error.message === "Token required" ? "Token required" : "Could not reach NAS app";
@@ -311,10 +316,11 @@ function renderRows() {
     const row = document.createElement("tr");
     row.dataset.albumKey = album.album_key;
     row.classList.toggle("selected", album.album_key === state.selectedKey);
-    [album.status_label || "", album.artist || "", album.album || "", album.size_label || ""].forEach((value) => {
+    [album.status_label || "", album.artist || "", album.album || "", album.size_label || ""].forEach((value, index) => {
       const cell = document.createElement("td");
       cell.title = value;
       cell.textContent = value;
+      if (index === 0) cell.className = `status-cell ${statusClass(album)}`;
       row.appendChild(cell);
     });
     row.addEventListener("click", () => selectAlbum(album.album_key));
@@ -393,7 +399,7 @@ function renderSelected() {
   el.detailStatus.textContent = album.status_label || "-";
   el.detailReason.textContent = album.status_reason || "Nothing needed.";
   el.detailTracks.textContent = album.track_count ? fmt(album.track_count) : "-";
-  el.detailChecked.textContent = album.last_scanned || "-";
+  el.detailChecked.textContent = formatDateTime(album.last_scanned);
   loadCover(album);
 }
 

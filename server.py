@@ -33,8 +33,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.13'
-APP_BUILD = '5.13'
+WORKER_BUILD = '5.14'
+APP_BUILD = '5.14'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -43,7 +43,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.13 restores the cleaner two-pane NAS web workbench.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.14 polishes the two-pane NAS web UI.'
 )
 
 
