@@ -7,8 +7,8 @@ import sys
 import urllib.error
 import urllib.request
 
-EXPECTED_BUILD = '5.04'
-MIN_API = 3
+EXPECTED_BUILD = '5.10'
+MIN_API = 5
 
 
 def fetch(url: str, token: str = ''):
@@ -53,6 +53,9 @@ def main() -> int:
     endpoints = root.get('endpoints') or []
     if not any('/scan-library' in str(endpoint) for endpoint in endpoints):
         print('ERROR: worker does not advertise POST /scan-library. Rebuild/recreate the worker project.')
+        return 1
+    if not any('/app/' in str(endpoint) for endpoint in endpoints):
+        print('ERROR: worker does not advertise the NAS web UI. Pull/recreate the latest image.')
         return 1
 
     if token:

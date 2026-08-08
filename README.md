@@ -1,9 +1,9 @@
-# Artwork Manager NAS Worker
+# Artwork Manager NAS
 
-NAS-local Docker worker for Artwork Manager. The Mac app stays as the review UI, while scan, embed, convert/save, and deep-check work happens on the NAS-local filesystem instead of through SMB/VPN.
+NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.05**
-Worker API: **4**
+Current worker build: **5.10**
+Worker API: **5**
 
 ## Why This Repo Exists
 
@@ -17,7 +17,7 @@ Synology Container Manager can then update the worker like a normal container im
 
 The publishing workflow template is included at `github-actions/docker-image.yml`. To activate image publishing, copy that file to `.github/workflows/docker-image.yml` in GitHub or push it from a Git token with `workflow` scope.
 
-Build 5.05 adds live scan progress in `/status`, so the Mac app can show NAS-side folder checks while a library scan is still running.
+Build 5.10 adds the first NAS-hosted web UI at `/app/`. It can start NAS-local scans, show live scan progress, save a persistent queue in `/data`, filter the queue, and preview current embedded artwork. Provider search and browser-based approve/embed are the next migration step.
 
 ## Synology Setup
 
@@ -47,6 +47,7 @@ Set:
 AMW_TOKEN=use-a-private-token-here
 AMW_MUSIC_PATH=/volume2/data/media/music
 AMW_BACKUP_PATH=./backups
+AMW_DATA_PATH=./data
 AMW_HOST_PORT=8765
 ```
 
@@ -74,14 +75,14 @@ You can also update from Synology Container Manager by stopping the project, pul
 Open this from your Mac:
 
 ```text
-http://YOUR-NAS-IP:8765/
+http://YOUR-NAS-IP:8765/app/
 ```
 
-You should see:
+Open the plain worker status at `http://YOUR-NAS-IP:8765/` without a browser UI check. You should see:
 
 ```text
-worker_build: "5.05"
-api: 4
+worker_build: "5.10"
+api: 5
 ```
 
 Optional token-protected check:

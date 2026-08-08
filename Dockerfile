@@ -1,8 +1,8 @@
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="Artwork Manager NAS Worker" \
-      org.opencontainers.image.version="5.05" \
-      org.opencontainers.image.description="NAS-local artwork embed, convert, and deep-check worker for Artwork Manager" \
+      org.opencontainers.image.version="5.10" \
+      org.opencontainers.image.description="NAS-local artwork manager with browser UI, scanning, embed, convert, and deep-check worker APIs" \
       org.opencontainers.image.source="https://github.com/rikkidavids/artwork-manager-nas-worker"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -10,12 +10,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     AMW_HOST=0.0.0.0 \
     AMW_PORT=8765 \
     AMW_MUSIC_ROOT=/music \
-    AMW_BACKUP_DIR=/backups
+    AMW_BACKUP_DIR=/backups \
+    AMW_DATA_DIR=/data
 
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY server.py /app/server.py
+COPY web /app/web
 
 EXPOSE 8765
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

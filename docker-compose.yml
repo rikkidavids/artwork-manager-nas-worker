@@ -9,7 +9,9 @@ services:
       AMW_TOKEN: "${AMW_TOKEN:-change-me}"
       AMW_MUSIC_ROOT: "/music"
       AMW_BACKUP_DIR: "/backups"
+      AMW_DATA_DIR: "/data"
       AMW_RECENT_JOBS: "${AMW_RECENT_JOBS:-50}"
     volumes:
       - "${AMW_MUSIC_PATH:-/volume2/data/media/music}:/music:rw"
       - "${AMW_BACKUP_PATH:-./backups}:/backups:rw"
+      - "${AMW_DATA_PATH:-./data}:/data:rw"

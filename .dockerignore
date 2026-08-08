@@ -2,6 +2,7 @@
 .github
 .env
 backups
+data
 __pycache__
 *.pyc
 *.pyo

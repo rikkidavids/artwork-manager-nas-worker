@@ -10,9 +10,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import shutil
+import sqlite3
 import threading
 import time
 import unicodedata
@@ -24,15 +26,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from urllib.parse import parse_qs, unquote, urlparse
 
 from PIL import Image, ImageOps
 from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.05'
-APP_BUILD = '5.05'
-WORKER_API = 4
+WORKER_BUILD = '5.10'
+APP_BUILD = '5.10'
+WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
 MUSIC_EXTENSIONS = ('.mp3', '.flac', '.m4a', '.mp4')
@@ -40,7 +43,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.05 adds live NAS scan progress.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.10 adds the first NAS-hosted web UI.'
 )
 
 
@@ -56,6 +59,9 @@ def env_roots() -> List[Path]:
 
 MUSIC_ROOTS = env_roots()
 BACKUP_ROOT = Path(os.environ.get('AMW_BACKUP_DIR') or '/backups').resolve()
+DATA_ROOT = Path(os.environ.get('AMW_DATA_DIR') or '/data').resolve()
+DB_PATH = DATA_ROOT / 'artwork_manager.sqlite3'
+WEB_ROOT = Path(__file__).resolve().parent / 'web'
 API_TOKEN = os.environ.get('AMW_TOKEN') or ''
 HOST = os.environ.get('AMW_HOST') or '0.0.0.0'
 PORT = int(os.environ.get('AMW_PORT') or '8765')
@@ -235,7 +241,7 @@ def status_payload(public: bool = False) -> Dict[str, Any]:
         'active_jobs': active,
         'recent_jobs': recent,
         'recent_job_count': len(recent),
-        'endpoints': ['GET /', 'GET /version', 'GET /health', 'GET /status', 'POST /scan-library', 'POST /embed', 'POST /deep-check', 'POST /path-check'],
+        'endpoints': ['GET /app/', 'GET /', 'GET /version', 'GET /health', 'GET /status', 'GET /api/app/status', 'GET /api/albums', 'GET /api/artwork/current', 'POST /api/scan/start', 'POST /scan-library', 'POST /embed', 'POST /deep-check', 'POST /path-check'],
         'update_hint': UPDATE_HINT,
         'build_marker': f'amw-worker-{WORKER_BUILD}-api-{WORKER_API}',
     }
@@ -596,6 +602,400 @@ def fingerprint_matches(saved: Any, current: Any) -> bool:
         int(saved.get('max_mtime_ns') or -1) == int(current.get('max_mtime_ns') or -2) and
         str(saved.get('digest') or '') == str(current.get('digest') or '')
     )
+
+
+WEB_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS albums (
+  album_key TEXT PRIMARY KEY,
+  artist TEXT,
+  album TEXT,
+  album_path TEXT,
+  status TEXT DEFAULT 'pending',
+  width INTEGER,
+  height INTEGER,
+  example_file TEXT,
+  search_artist TEXT,
+  search_album TEXT,
+  year TEXT,
+  mb_release_id TEXT,
+  mb_releasegroup_id TEXT,
+  identity_confidence TEXT,
+  track_count INTEGER,
+  notes TEXT,
+  last_scanned TEXT
+);
+CREATE TABLE IF NOT EXISTS history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  album_key TEXT,
+  action TEXT,
+  payload TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_albums_status_artist_album ON albums(status, artist, album);
+CREATE INDEX IF NOT EXISTS idx_albums_path ON albums(album_path);
+'''
+
+
+def init_web_db() -> None:
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA synchronous=NORMAL')
+        except Exception:
+            pass
+        conn.executescript(WEB_SCHEMA)
+
+
+def db_connect() -> sqlite3.Connection:
+    init_web_db()
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute('PRAGMA busy_timeout=5000')
+        conn.execute('PRAGMA synchronous=NORMAL')
+    except Exception:
+        pass
+    return conn
+
+
+def web_album_key(album_path: Any) -> str:
+    value = path_resume_key(album_path)
+    digest = hashlib.sha1(value.encode('utf-8', errors='ignore')).hexdigest()
+    return digest[:20]
+
+
+def web_status_bucket(status: Any) -> str:
+    status = str(status or '').strip()
+    if status in {'candidate_found'}:
+        return 'Review'
+    if status in {'already_good', 'approved', 'reviewed_skipped', 'ignored'}:
+        return 'Done'
+    if status in {'needs_review', 'missing_artwork', 'not_square_artwork', 'incompatible_artwork', 'no_candidate', 'pending', 'searching'}:
+        return 'Needs Work'
+    return 'Needs Work' if status else 'Needs Work'
+
+
+def web_status_label(status: Any) -> str:
+    status = str(status or '').strip()
+    return {
+        'already_good': 'Good',
+        'approved': 'Done',
+        'candidate_found': 'Review',
+        'ignored': 'Ignored',
+        'incompatible_artwork': 'Convert',
+        'missing_artwork': 'Missing',
+        'needs_review': 'Needs Search',
+        'no_candidate': 'No Cover Found',
+        'not_square_artwork': 'Not Square',
+        'pending': 'Pending',
+        'reviewed_skipped': 'Skipped',
+        'searching': 'Searching',
+    }.get(status, status.replace('_', ' ').title() if status else 'Pending')
+
+
+def web_status_for_scan_item(item: Dict[str, Any]) -> Tuple[str, str]:
+    if not bool(item.get('requires_action')):
+        return 'already_good', 'No action needed.'
+    identity = item.get('identity') if isinstance(item.get('identity'), dict) else {}
+    notes = identity.get('notes') if isinstance(identity.get('notes'), dict) else {}
+    width = item.get('width')
+    height = item.get('height')
+    compat = notes.get('artwork_compatibility') if isinstance(notes.get('artwork_compatibility'), dict) else {}
+    folder = notes.get('album_folder_cover') if isinstance(notes.get('album_folder_cover'), dict) else {}
+    if width in (None, '', 'Missing') or height in (None, '', 'Missing'):
+        return 'missing_artwork', 'Embedded artwork is missing from at least one track.'
+    if compat.get('needs_conversion') or folder.get('needs_save'):
+        issue = compat.get('issue') or compat.get('format') or folder.get('issue') or 'Artwork needs rewriting.'
+        return 'incompatible_artwork', str(issue)
+    try:
+        if int(width or 0) != int(height or 0):
+            return 'not_square_artwork', 'Current artwork is not square.'
+    except Exception:
+        pass
+    return 'needs_review', 'Current artwork needs a better cover.'
+
+
+def web_decode_notes(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {}
+
+
+def web_existing_album_resume_info() -> List[Dict[str, Any]]:
+    out = []
+    with db_connect() as conn:
+        rows = conn.execute('SELECT album_key, album_path, notes FROM albums WHERE album_path IS NOT NULL AND album_path<>""').fetchall()
+    for row in rows:
+        notes = web_decode_notes(row['notes'])
+        out.append({
+            'album_key': row['album_key'],
+            'album_path': row['album_path'],
+            'scan_fingerprint': notes.get('scan_fingerprint') if isinstance(notes.get('scan_fingerprint'), dict) else None,
+        })
+    return out
+
+
+def web_existing_album_key_by_path(album_path: Any) -> str:
+    path = str(album_path or '')
+    if not path:
+        return ''
+    key = path_resume_key(path)
+    with db_connect() as conn:
+        rows = conn.execute('SELECT album_key, album_path FROM albums WHERE album_path IS NOT NULL AND album_path<>""').fetchall()
+    for row in rows:
+        if path_resume_key(row['album_path']) == key:
+            return str(row['album_key'] or '')
+    return ''
+
+
+def web_upsert_album(item: Dict[str, Any]) -> str:
+    album_path = str(item.get('album_path') or '')
+    album_key = str(item.get('album_key') or '') or web_existing_album_key_by_path(album_path) or web_album_key(album_path)
+    identity = item.get('identity') if isinstance(item.get('identity'), dict) else {}
+    notes = dict(identity.get('notes') or {}) if isinstance(identity.get('notes'), dict) else {}
+    fingerprint = item.get('scan_fingerprint')
+    if fingerprint:
+        notes['scan_fingerprint'] = fingerprint
+    status, reason = web_status_for_scan_item(item)
+    notes['status_reason'] = reason
+    width = item.get('width')
+    height = item.get('height')
+    width = None if width in (None, '', 'Missing') else int(width)
+    height = None if height in (None, '', 'Missing') else int(height)
+    with db_connect() as conn:
+        conn.execute(
+            '''
+            INSERT INTO albums(
+              album_key, artist, album, album_path, status, width, height, example_file,
+              search_artist, search_album, year, mb_release_id, mb_releasegroup_id,
+              identity_confidence, track_count, notes, last_scanned
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(album_key) DO UPDATE SET
+              artist=excluded.artist,
+              album=excluded.album,
+              album_path=excluded.album_path,
+              status=excluded.status,
+              width=excluded.width,
+              height=excluded.height,
+              example_file=excluded.example_file,
+              search_artist=excluded.search_artist,
+              search_album=excluded.search_album,
+              year=excluded.year,
+              mb_release_id=excluded.mb_release_id,
+              mb_releasegroup_id=excluded.mb_releasegroup_id,
+              identity_confidence=excluded.identity_confidence,
+              track_count=excluded.track_count,
+              notes=excluded.notes,
+              last_scanned=excluded.last_scanned
+            ''',
+            (
+                album_key,
+                str(item.get('artist') or 'Unknown Artist'),
+                str(item.get('album') or 'Unknown Album'),
+                album_path,
+                status,
+                width,
+                height,
+                str(item.get('example_file') or ''),
+                str(item.get('search_artist') or item.get('artist') or ''),
+                str(item.get('search_album') or item.get('album') or ''),
+                str(item.get('year') or ''),
+                str(item.get('mb_release_id') or ''),
+                str(item.get('mb_releasegroup_id') or ''),
+                str(item.get('identity_confidence') or ''),
+                item.get('track_count'),
+                json.dumps(notes),
+                now(),
+            ),
+        )
+    return album_key
+
+
+def web_apply_scan_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    updated = 0
+    for update in result.get('fingerprint_updates') or []:
+        if not isinstance(update, dict):
+            continue
+        album_key = str(update.get('album_key') or '')
+        fingerprint = update.get('scan_fingerprint')
+        if not album_key or not isinstance(fingerprint, dict):
+            continue
+        with db_connect() as conn:
+            row = conn.execute('SELECT notes FROM albums WHERE album_key=?', (album_key,)).fetchone()
+            if not row:
+                continue
+            notes = web_decode_notes(row['notes'])
+            notes['scan_fingerprint'] = fingerprint
+            conn.execute('UPDATE albums SET notes=?, last_scanned=? WHERE album_key=?', (json.dumps(notes), now(), album_key))
+            updated += 1
+    for item in result.get('albums') or []:
+        if isinstance(item, dict):
+            web_upsert_album(item)
+            updated += 1
+    return {'updated_rows': updated, 'counts': web_queue_counts()}
+
+
+def web_queue_counts() -> Dict[str, int]:
+    counts = {'All': 0, 'Needs Work': 0, 'Review': 0, 'Done': 0}
+    with db_connect() as conn:
+        rows = conn.execute('SELECT status, COUNT(*) AS n FROM albums GROUP BY status').fetchall()
+    for row in rows:
+        n = int(row['n'] or 0)
+        counts['All'] += n
+        bucket = web_status_bucket(row['status'])
+        counts[bucket] = counts.get(bucket, 0) + n
+    return counts
+
+
+def web_album_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+    notes = web_decode_notes(row['notes'])
+    width = row['width']
+    height = row['height']
+    if width and height:
+        size = f'{width} x {height}'
+    else:
+        size = 'Missing'
+    status = row['status'] or 'pending'
+    return {
+        'album_key': row['album_key'],
+        'artist': row['artist'] or 'Unknown Artist',
+        'album': row['album'] or 'Unknown Album',
+        'album_path': row['album_path'] or '',
+        'status': status,
+        'status_label': web_status_label(status),
+        'bucket': web_status_bucket(status),
+        'status_reason': notes.get('status_reason') or '',
+        'width': width,
+        'height': height,
+        'size_label': size,
+        'example_file': row['example_file'] or '',
+        'search_artist': row['search_artist'] or row['artist'] or '',
+        'search_album': row['search_album'] or row['album'] or '',
+        'year': row['year'] or '',
+        'track_count': row['track_count'] or 0,
+        'last_scanned': row['last_scanned'] or '',
+        'notes': notes,
+    }
+
+
+def web_query_albums(params: Dict[str, List[str]]) -> Dict[str, Any]:
+    bucket = (params.get('bucket') or ['All'])[0]
+    query = ((params.get('q') or [''])[0] or '').strip().lower()
+    try:
+        limit = max(1, min(int((params.get('limit') or ['250'])[0] or 250), 1000))
+    except Exception:
+        limit = 250
+    with db_connect() as conn:
+        rows = conn.execute('SELECT * FROM albums ORDER BY lower(artist), lower(album), lower(album_path)').fetchall()
+    items = []
+    for row in rows:
+        item = web_album_from_row(row)
+        if bucket and bucket != 'All' and item['bucket'] != bucket:
+            continue
+        if query:
+            haystack = f"{item['artist']} {item['album']} {item['album_path']}".lower()
+            if query not in haystack:
+                continue
+        items.append(item)
+        if len(items) >= limit:
+            break
+    return {'ok': True, 'albums': items, 'counts': web_queue_counts(), 'shown': len(items)}
+
+
+def web_get_album(album_key: str) -> Dict[str, Any] | None:
+    with db_connect() as conn:
+        row = conn.execute('SELECT * FROM albums WHERE album_key=?', (album_key,)).fetchone()
+    return web_album_from_row(row) if row else None
+
+
+def web_current_artwork(album_key: str) -> Tuple[bytes, str]:
+    album = web_get_album(album_key)
+    if not album:
+        raise FileNotFoundError('album not found')
+    folder = safe_path(album.get('album_path') or '')
+    if not folder.is_dir():
+        raise FileNotFoundError('album folder not found')
+    candidates = []
+    example = str(album.get('example_file') or '')
+    if example:
+        candidates.append(folder / example)
+    candidates.extend(iter_music_files(folder))
+    seen = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen or not path.is_file():
+            continue
+        seen.add(key)
+        for art in embedded_artwork(path):
+            data = art.get('bytes')
+            if data:
+                fmt = str(art.get('format') or '').upper()
+                mime = 'image/png' if fmt == 'PNG' else 'image/jpeg'
+                return data, mime
+    raise FileNotFoundError('no embedded artwork')
+
+
+def web_default_scan_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    scan_min = int(payload.get('scan_min_artwork_size') or os.environ.get('AMW_SCAN_MIN_ARTWORK_SIZE') or 1000)
+    preferred = int(payload.get('preferred_artwork_size') or os.environ.get('AMW_PREFERRED_ARTWORK_SIZE') or scan_min)
+    root = str(payload.get('library_root') or (str(MUSIC_ROOTS[0]) if MUSIC_ROOTS else '/music'))
+    deep_scan = bool(payload.get('deep_scan_all_files', str(os.environ.get('AMW_DEEP_SCAN_ALL_FILES') or '').lower() in {'1', 'true', 'yes'}))
+    resume = bool(payload.get('resume', True))
+    return {
+        'library_root': root,
+        'album_folder': root,
+        'include_missing': bool(payload.get('include_missing', True)),
+        'resume': resume,
+        'deep_scan_all_files': deep_scan,
+        'scan_min_artwork_size': scan_min,
+        'preferred_artwork_size': preferred,
+        'target_size_match_mode': payload.get('target_size_match_mode') or os.environ.get('AMW_TARGET_SIZE_MATCH_MODE') or 'Relaxed',
+        'save_approved_artwork_to_album_folder': bool(payload.get('save_approved_artwork_to_album_folder', str(os.environ.get('AMW_SAVE_FOLDER_COVER') or '').lower() in {'1', 'true', 'yes'})),
+        'max_workers': int(payload.get('max_workers') or os.environ.get('AMW_SCAN_WORKERS') or 8),
+        'known_albums': [] if deep_scan or not resume else web_existing_album_resume_info(),
+    }
+
+
+def start_web_scan(payload: Dict[str, Any]) -> Dict[str, Any]:
+    scan_payload = web_default_scan_payload(payload)
+    root = safe_path(scan_payload.get('library_root') or '')
+    scan_payload['library_root'] = str(root)
+    scan_payload['album_folder'] = str(root)
+    job_id, started_mono, _album = begin_job('scan-library', scan_payload)
+
+    def worker() -> None:
+        try:
+            result = scan_library_job(scan_payload, job_id=job_id)
+            applied = web_apply_scan_result(result)
+            result['web_queue'] = applied
+            finish_job(job_id, started_mono, True, result=result)
+        except Exception as exc:
+            finish_job(job_id, started_mono, False, error=str(exc))
+
+    threading.Thread(target=worker, name=f'ArtworkManagerWebScan-{job_id}', daemon=True).start()
+    return {'ok': True, 'job_id': job_id, 'message': 'Scan started on the NAS worker.'}
+
+
+def web_status_payload() -> Dict[str, Any]:
+    payload = status_payload(public=False)
+    payload['web_app'] = {
+        'enabled': True,
+        'data_root': str(DATA_ROOT),
+        'db_path': str(DB_PATH),
+        'counts': web_queue_counts(),
+        'music_roots': [str(path) for path in MUSIC_ROOTS],
+    }
+    return payload
 
 
 def target_tolerance(mode: Any) -> float:
@@ -1363,6 +1763,65 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_bytes(self, status: int, data: bytes, content_type: str, cache: str = 'no-store') -> None:
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', cache)
+        self.send_header('X-Artwork-Worker-Build', WORKER_BUILD)
+        self.send_header('X-Artwork-Worker-API', str(WORKER_API))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _redirect(self, location: str) -> None:
+        self.send_response(302)
+        self.send_header('Location', location)
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+
+    def _wants_html(self) -> bool:
+        accept = self.headers.get('Accept') or ''
+        return 'text/html' in accept or 'application/xhtml+xml' in accept
+
+    def _send_web_asset(self, route: str) -> None:
+        if route in ('/app', '/app/'):
+            rel = 'index.html'
+        else:
+            rel = unquote(route[5:] if route.startswith('/app/') else route).strip('/')
+        if not rel:
+            rel = 'index.html'
+        target = (WEB_ROOT / rel).resolve(strict=False)
+        root = WEB_ROOT.resolve(strict=False)
+        try:
+            target.relative_to(root)
+        except ValueError:
+            self._send(404, {'ok': False, 'error': 'not found', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+            return
+        if not target.is_file():
+            self._send(404, {'ok': False, 'error': 'not found', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+            return
+        content_type = mimetypes.guess_type(str(target))[0] or 'application/octet-stream'
+        if target.name == 'index.html':
+            content_type = 'text/html; charset=utf-8'
+        elif target.suffix == '.css':
+            content_type = 'text/css; charset=utf-8'
+        elif target.suffix == '.js':
+            content_type = 'application/javascript; charset=utf-8'
+        self._send_bytes(200, target.read_bytes(), content_type, cache='no-cache')
+
+    def do_HEAD(self):
+        parsed = urlparse(self.path)
+        raw_route = parsed.path or '/'
+        if raw_route == '/' and self._wants_html():
+            self.send_response(302)
+            self.send_header('Location', '/app/')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            return
+        self.send_response(200 if raw_route in ('/', '/version', '/app/') else 404)
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+
     def _auth_ok(self):
         if not API_TOKEN:
             return True
@@ -1374,15 +1833,51 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(raw.decode('utf-8') or '{}')
 
     def do_GET(self):
-        route = self.path.split('?', 1)[0].rstrip('/') or '/'
+        parsed = urlparse(self.path)
+        raw_route = parsed.path or '/'
+        route = raw_route.rstrip('/') or '/'
+        params = parse_qs(parsed.query)
         if route == '/favicon.ico':
             self.send_response(204)
             self.send_header('Cache-Control', 'no-store')
             self.end_headers()
             return
+        if raw_route == '/app':
+            self._redirect('/app/')
+            return
+        if raw_route == '/' and self._wants_html():
+            self._redirect('/app/')
+            return
+        if raw_route == '/app/' or raw_route.startswith('/app/'):
+            self._send_web_asset(raw_route)
+            return
+        if route == '/api/app/status':
+            if not self._auth_ok():
+                self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            self._send(200, web_status_payload())
+            return
+        if route == '/api/albums':
+            if not self._auth_ok():
+                self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            self._send(200, web_query_albums(params))
+            return
+        if route == '/api/artwork/current':
+            if not self._auth_ok():
+                self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            album_key = (params.get('album_key') or [''])[0]
+            try:
+                data, mime = web_current_artwork(album_key)
+            except Exception as exc:
+                self._send(404, {'ok': False, 'error': str(exc), 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            self._send_bytes(200, data, mime)
+            return
         if route in ('/', '/version'):
             payload = status_payload(public=True)
-            payload['message'] = 'Worker is running. Use /status with the API token, or Test NAS Worker in the Mac app, for authenticated checks.'
+            payload['message'] = 'Worker is running. Open /app/ in a browser for the NAS web UI, or use /status with the API token for authenticated checks.'
             self._send(200, payload)
             return
         if route in ('/health', '/status'):
@@ -1402,6 +1897,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             route = self.path.rstrip('/')
+            route = urlparse(route).path.rstrip('/')
+            if route == '/api/scan/start':
+                result = start_web_scan(payload)
+                self._send(200, result)
+                return
             if route == '/path-check':
                 album_folder = safe_path(payload.get('album_folder') or '')
                 result = path_check(album_folder, requested_album_folder=str(payload.get('album_folder') or ''))
@@ -1453,7 +1953,10 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    init_web_db()
     print(f'{VERSION} listening on {HOST}:{PORT}', flush=True)
     print('Music roots: ' + ', '.join(str(x) for x in MUSIC_ROOTS), flush=True)
+    print(f'Web UI: http://{HOST}:{PORT}/app/  Data: {DATA_ROOT}', flush=True)
     print(UPDATE_HINT, flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

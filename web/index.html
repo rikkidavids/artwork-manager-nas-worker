@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Artwork Manager NAS</title>
+    <link rel="stylesheet" href="/app/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>Artwork Manager</h1>
+          <p id="workerSummary">Connecting to NAS...</p>
+        </div>
+        <div class="top-actions">
+          <button id="refreshBtn" class="ghost" type="button">Refresh</button>
+          <button id="scanBtn" class="primary" type="button">Scan Library</button>
+        </div>
+      </header>
+
+      <section id="tokenPanel" class="token-panel hidden">
+        <div>
+          <h2>NAS Token</h2>
+          <p>Enter the worker token from Container Manager.</p>
+        </div>
+        <div class="token-row">
+          <input id="tokenInput" type="password" autocomplete="current-password" placeholder="API token">
+          <button id="saveTokenBtn" class="primary" type="button">Save</button>
+        </div>
+      </section>
+
+      <section class="summary-grid" aria-label="Library summary">
+        <div class="metric">
+          <span>All</span>
+          <strong id="countAll">0</strong>
+        </div>
+        <div class="metric">
+          <span>Needs Work</span>
+          <strong id="countNeeds">0</strong>
+        </div>
+        <div class="metric">
+          <span>Review</span>
+          <strong id="countReview">0</strong>
+        </div>
+        <div class="metric">
+          <span>Done</span>
+          <strong id="countDone">0</strong>
+        </div>
+      </section>
+
+      <section id="scanPanel" class="scan-panel hidden">
+        <div class="scan-copy">
+          <strong id="scanTitle">Scan running</strong>
+          <span id="scanText">Preparing scan...</span>
+        </div>
+        <div class="scan-track">
+          <div id="scanBar" class="scan-bar"></div>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <aside class="queue-pane">
+          <div class="pane-head">
+            <h2>Queue</h2>
+            <span id="shownCount">0 shown</span>
+          </div>
+          <input id="searchInput" class="search" type="search" placeholder="Search artist, album, folder...">
+          <div class="chips" role="tablist" aria-label="Queue filters">
+            <button class="chip active" type="button" data-bucket="All">All</button>
+            <button class="chip" type="button" data-bucket="Needs Work">Needs Work</button>
+            <button class="chip" type="button" data-bucket="Review">Review</button>
+            <button class="chip" type="button" data-bucket="Done">Done</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Artist</th>
+                  <th>Album</th>
+                  <th>Size</th>
+                </tr>
+              </thead>
+              <tbody id="albumRows">
+                <tr>
+                  <td colspan="4" class="empty">No albums loaded.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </aside>
+
+        <section class="detail-pane">
+          <div class="detail-head">
+            <div>
+              <h2 id="albumTitle">No album selected</h2>
+              <p id="albumPath">Scan the library or choose an album.</p>
+            </div>
+            <span id="albumStatus" class="status-pill">Idle</span>
+          </div>
+
+          <div class="review-grid">
+            <section class="art-panel">
+              <h3>Current</h3>
+              <div class="cover-box">
+                <img id="currentCover" alt="">
+                <span id="coverPlaceholder">No artwork</span>
+              </div>
+              <p id="coverMeta">No cover selected.</p>
+            </section>
+
+            <section class="notes-panel">
+              <h3>Summary</h3>
+              <dl>
+                <div>
+                  <dt>Status</dt>
+                  <dd id="detailStatus">-</dd>
+                </div>
+                <div>
+                  <dt>Why</dt>
+                  <dd id="detailReason">-</dd>
+                </div>
+                <div>
+                  <dt>Tracks</dt>
+                  <dd id="detailTracks">-</dd>
+                </div>
+                <div>
+                  <dt>Last checked</dt>
+                  <dd id="detailChecked">-</dd>
+                </div>
+              </dl>
+            </section>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/app/app.js"></script>
+  </body>
+</html>

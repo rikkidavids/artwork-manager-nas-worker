@@ -1,5 +1,6 @@
 .env
 backups/
+data/
 __pycache__/
 *.py[cod]
 *.pyo
