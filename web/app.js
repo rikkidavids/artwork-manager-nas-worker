@@ -6,15 +6,18 @@ const state = {
   selectedKey: "",
   coverUrl: "",
   scanActive: false,
+  settings: {},
+  settingsLoaded: false,
+  appInfo: {},
 };
 
 const el = {
   workerSummary: document.getElementById("workerSummary"),
   refreshBtn: document.getElementById("refreshBtn"),
+  settingsBtn: document.getElementById("settingsBtn"),
   scanBtn: document.getElementById("scanBtn"),
-  tokenPanel: document.getElementById("tokenPanel"),
-  tokenInput: document.getElementById("tokenInput"),
-  saveTokenBtn: document.getElementById("saveTokenBtn"),
+  unlockPanel: document.getElementById("unlockPanel"),
+  unlockSettingsBtn: document.getElementById("unlockSettingsBtn"),
   countAll: document.getElementById("countAll"),
   countNeeds: document.getElementById("countNeeds"),
   countReview: document.getElementById("countReview"),
@@ -35,6 +38,28 @@ const el = {
   detailReason: document.getElementById("detailReason"),
   detailTracks: document.getElementById("detailTracks"),
   detailChecked: document.getElementById("detailChecked"),
+  settingsOverlay: document.getElementById("settingsOverlay"),
+  settingsForm: document.getElementById("settingsForm"),
+  settingsPanelTitle: document.getElementById("settingsPanelTitle"),
+  settingsMessage: document.getElementById("settingsMessage"),
+  closeSettingsBtn: document.getElementById("closeSettingsBtn"),
+  settingLibraryRoot: document.getElementById("settingLibraryRoot"),
+  settingBuild: document.getElementById("settingBuild"),
+  settingApi: document.getElementById("settingApi"),
+  settingDataRoot: document.getElementById("settingDataRoot"),
+  settingBackupRoot: document.getElementById("settingBackupRoot"),
+  settingResumeScans: document.getElementById("settingResumeScans"),
+  settingIncludeMissing: document.getElementById("settingIncludeMissing"),
+  settingDeepScan: document.getElementById("settingDeepScan"),
+  settingScanWorkers: document.getElementById("settingScanWorkers"),
+  settingMatchMode: document.getElementById("settingMatchMode"),
+  settingScanMin: document.getElementById("settingScanMin"),
+  settingPreferred: document.getElementById("settingPreferred"),
+  settingMaxEmbed: document.getElementById("settingMaxEmbed"),
+  settingSaveFolder: document.getElementById("settingSaveFolder"),
+  settingBackupEmbed: document.getElementById("settingBackupEmbed"),
+  settingToken: document.getElementById("settingToken"),
+  settingTokenRequired: document.getElementById("settingTokenRequired"),
 };
 
 function headers() {
@@ -49,14 +74,14 @@ async function api(path, options = {}) {
     headers: { ...headers(), ...(options.headers || {}) },
   });
   if (response.status === 401) {
-    el.tokenPanel.classList.remove("hidden");
+    el.unlockPanel.classList.remove("hidden");
     throw new Error("Token required");
   }
   const payload = await response.json();
   if (!response.ok || payload.ok === false) {
     throw new Error(payload.error || "Request failed");
   }
-  el.tokenPanel.classList.add("hidden");
+  el.unlockPanel.classList.add("hidden");
   return payload;
 }
 
@@ -89,6 +114,135 @@ function setCounts(counts = {}) {
     chip.textContent = `${bucket} ${fmt(count)}`;
     chip.classList.toggle("active", bucket === state.bucket);
   });
+}
+
+function settingsTitle(tab) {
+  return {
+    general: "General",
+    scanning: "Scanning",
+    artwork: "Artwork",
+    security: "Security",
+  }[tab] || "Settings";
+}
+
+function setSettingsTab(tab) {
+  document.querySelectorAll(".settings-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.settingsTab === tab);
+  });
+  document.querySelectorAll(".settings-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.settingsPanel === tab);
+  });
+  el.settingsPanelTitle.textContent = settingsTitle(tab);
+}
+
+function populateSettings(payload = {}) {
+  const settings = payload.settings || state.settings || {};
+  const info = {
+    worker_build: payload.worker_build || state.appInfo.worker_build || "",
+    api: payload.api || state.appInfo.api || "",
+    data_root: payload.data_root || state.appInfo.data_root || "",
+    backup_root: payload.backup_root || state.appInfo.backup_root || "",
+    token_required: payload.token_required ?? state.appInfo.token_required,
+  };
+  state.settings = settings;
+  state.appInfo = { ...state.appInfo, ...info };
+  el.settingLibraryRoot.value = settings.library_root || "/music";
+  el.settingBuild.value = info.worker_build || "-";
+  el.settingApi.value = info.api || "-";
+  el.settingDataRoot.value = info.data_root || "-";
+  el.settingBackupRoot.value = info.backup_root || "-";
+  el.settingResumeScans.checked = Boolean(settings.resume_scans);
+  el.settingIncludeMissing.checked = Boolean(settings.include_missing);
+  el.settingDeepScan.checked = Boolean(settings.deep_scan_all_files);
+  el.settingScanWorkers.value = settings.scan_worker_threads || 8;
+  el.settingMatchMode.value = settings.target_size_match_mode || "Relaxed";
+  el.settingScanMin.value = settings.scan_min_artwork_size || 1000;
+  el.settingPreferred.value = settings.preferred_artwork_size || 1000;
+  el.settingMaxEmbed.value = settings.max_embedded_artwork_size || 0;
+  el.settingSaveFolder.checked = Boolean(settings.save_approved_artwork_to_album_folder);
+  el.settingBackupEmbed.checked = Boolean(settings.backup_before_embed);
+  el.settingToken.value = state.token;
+  el.settingTokenRequired.value = info.token_required ? "Yes" : "No";
+}
+
+function readSettingsForm() {
+  return {
+    library_root: el.settingLibraryRoot.value.trim() || "/music",
+    resume_scans: el.settingResumeScans.checked,
+    include_missing: el.settingIncludeMissing.checked,
+    deep_scan_all_files: el.settingDeepScan.checked,
+    scan_worker_threads: Number(el.settingScanWorkers.value || 8),
+    target_size_match_mode: el.settingMatchMode.value || "Relaxed",
+    scan_min_artwork_size: Number(el.settingScanMin.value || 1000),
+    preferred_artwork_size: Number(el.settingPreferred.value || 1000),
+    max_embedded_artwork_size: Number(el.settingMaxEmbed.value || 0),
+    save_approved_artwork_to_album_folder: el.settingSaveFolder.checked,
+    backup_before_embed: el.settingBackupEmbed.checked,
+  };
+}
+
+async function loadSettings() {
+  const payload = await api("/api/settings");
+  state.settingsLoaded = true;
+  populateSettings(payload);
+  el.settingsMessage.textContent = "Ready.";
+  return payload;
+}
+
+async function openSettings(tab = "general") {
+  el.settingsOverlay.classList.remove("hidden");
+  populateSettings({
+    settings: state.settings,
+    worker_build: state.appInfo.worker_build,
+    api: state.appInfo.api,
+    data_root: state.appInfo.data_root,
+    backup_root: state.appInfo.backup_root,
+    token_required: state.appInfo.token_required,
+  });
+  setSettingsTab(tab);
+  try {
+    await loadSettings();
+  } catch (error) {
+    el.settingsMessage.textContent = error.message === "Token required" ? "Enter the token in Security, then save." : "Settings could not be loaded.";
+    setSettingsTab("security");
+  }
+}
+
+function closeSettings() {
+  el.settingsOverlay.classList.add("hidden");
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  state.token = el.settingToken.value.trim();
+  if (state.token) {
+    localStorage.setItem("amwToken", state.token);
+  } else {
+    localStorage.removeItem("amwToken");
+  }
+  if (!state.settingsLoaded) {
+    try {
+      await loadSettings();
+      await refreshStatus();
+      await refreshQueue();
+      el.settingsMessage.textContent = "Connected.";
+    } catch (error) {
+      el.settingsMessage.textContent = "Token did not work.";
+    }
+    return;
+  }
+  try {
+    const payload = await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify(readSettingsForm()),
+    });
+    populateSettings(payload);
+    await refreshStatus();
+    await refreshQueue();
+    el.settingsMessage.textContent = "Saved.";
+  } catch (error) {
+    el.settingsMessage.textContent = error.message || "Settings were not saved.";
+  }
 }
 
 function activeScanJob(status) {
@@ -124,6 +278,17 @@ async function refreshStatus() {
     const status = await api("/api/app/status");
     const app = status.web_app || {};
     const counts = app.counts || {};
+    state.appInfo = {
+      worker_build: status.worker_build || "",
+      api: status.api || "",
+      data_root: app.data_root || "",
+      backup_root: app.backup_root || "",
+      token_required: app.token_required,
+    };
+    if (app.settings) {
+      state.settings = app.settings;
+      state.settingsLoaded = true;
+    }
     setCounts(counts);
     renderScan(status);
     el.workerSummary.textContent = `NAS build ${status.worker_build || "-"} - API ${status.api || "-"} - ${shortPath((app.music_roots || [])[0] || "/music")}`;
@@ -243,7 +408,7 @@ async function startScan() {
   try {
     await api("/api/scan/start", {
       method: "POST",
-      body: JSON.stringify({ library_root: "/music", resume: true, include_missing: true }),
+      body: JSON.stringify({}),
     });
     await refreshStatus();
   } catch (error) {
@@ -253,16 +418,19 @@ async function startScan() {
 }
 
 function bind() {
-  el.tokenInput.value = state.token;
-  el.saveTokenBtn.addEventListener("click", async () => {
-    state.token = el.tokenInput.value.trim();
-    localStorage.setItem("amwToken", state.token);
-    await refreshStatus();
-    await refreshQueue();
-  });
   el.refreshBtn.addEventListener("click", async () => {
     await refreshStatus();
     await refreshQueue();
+  });
+  el.settingsBtn.addEventListener("click", () => openSettings("general"));
+  el.unlockSettingsBtn.addEventListener("click", () => openSettings("security"));
+  el.closeSettingsBtn.addEventListener("click", closeSettings);
+  el.settingsForm.addEventListener("submit", saveSettings);
+  el.settingsOverlay.addEventListener("click", (event) => {
+    if (event.target === el.settingsOverlay) closeSettings();
+  });
+  document.querySelectorAll(".settings-tab").forEach((button) => {
+    button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab || "general"));
   });
   el.scanBtn.addEventListener("click", startScan);
   el.searchInput.addEventListener("input", () => {

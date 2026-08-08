@@ -15,19 +15,17 @@
         </div>
         <div class="top-actions">
           <button id="refreshBtn" class="ghost" type="button">Refresh</button>
+          <button id="settingsBtn" class="ghost" type="button">Settings</button>
           <button id="scanBtn" class="primary" type="button">Scan Library</button>
         </div>
       </header>
 
-      <section id="tokenPanel" class="token-panel hidden">
+      <section id="unlockPanel" class="unlock-panel hidden">
         <div>
-          <h2>NAS Token</h2>
-          <p>Enter the worker token from Container Manager.</p>
+          <h2>Connection Locked</h2>
+          <p>Open Settings and enter the NAS token for this browser.</p>
         </div>
-        <div class="token-row">
-          <input id="tokenInput" type="password" autocomplete="current-password" placeholder="API token">
-          <button id="saveTokenBtn" class="primary" type="button">Save</button>
-        </div>
+        <button id="unlockSettingsBtn" class="primary" type="button">Open Settings</button>
       </section>
 
       <section class="summary-grid" aria-label="Library summary">
@@ -135,6 +133,128 @@
         </section>
       </section>
     </main>
+
+    <div id="settingsOverlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <section class="settings-window">
+        <aside class="settings-sidebar">
+          <div class="settings-brand">
+            <h2 id="settingsTitle">Settings</h2>
+            <p>Artwork Manager NAS</p>
+          </div>
+          <button class="settings-tab active" type="button" data-settings-tab="general">General</button>
+          <button class="settings-tab" type="button" data-settings-tab="scanning">Scanning</button>
+          <button class="settings-tab" type="button" data-settings-tab="artwork">Artwork</button>
+          <button class="settings-tab" type="button" data-settings-tab="security">Security</button>
+        </aside>
+
+        <form id="settingsForm" class="settings-main">
+          <header class="settings-header">
+            <div>
+              <h2 id="settingsPanelTitle">General</h2>
+              <p id="settingsMessage">Ready.</p>
+            </div>
+            <div class="settings-actions">
+              <button id="closeSettingsBtn" class="ghost" type="button">Close</button>
+              <button id="saveSettingsBtn" class="primary" type="submit">Save</button>
+            </div>
+          </header>
+
+          <section class="settings-panel active" data-settings-panel="general">
+            <div class="setting-card">
+              <h3>Library</h3>
+              <label class="setting-field">
+                <span>Music root</span>
+                <input id="settingLibraryRoot" name="library_root" type="text" placeholder="/music">
+              </label>
+              <div class="setting-grid">
+                <label class="setting-field">
+                  <span>Worker build</span>
+                  <input id="settingBuild" type="text" readonly>
+                </label>
+                <label class="setting-field">
+                  <span>Worker API</span>
+                  <input id="settingApi" type="text" readonly>
+                </label>
+              </div>
+            </div>
+
+            <div class="setting-card">
+              <h3>Storage</h3>
+              <label class="setting-field">
+                <span>Data folder</span>
+                <input id="settingDataRoot" type="text" readonly>
+              </label>
+              <label class="setting-field">
+                <span>Backup folder</span>
+                <input id="settingBackupRoot" type="text" readonly>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-panel" data-settings-panel="scanning">
+            <div class="setting-card">
+              <h3>Scan Behaviour</h3>
+              <div class="switch-list">
+                <label><input id="settingResumeScans" name="resume_scans" type="checkbox"> Skip unchanged folders</label>
+                <label><input id="settingIncludeMissing" name="include_missing" type="checkbox"> Include missing artwork</label>
+                <label><input id="settingDeepScan" name="deep_scan_all_files" type="checkbox"> Check every track</label>
+              </div>
+              <div class="setting-grid">
+                <label class="setting-field">
+                  <span>Parallel checks</span>
+                  <input id="settingScanWorkers" name="scan_worker_threads" type="number" min="1" max="32" step="1">
+                </label>
+                <label class="setting-field">
+                  <span>Size matching</span>
+                  <select id="settingMatchMode" name="target_size_match_mode">
+                    <option value="Relaxed">Relaxed</option>
+                    <option value="Strict">Strict</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-panel" data-settings-panel="artwork">
+            <div class="setting-card">
+              <h3>Artwork Rules</h3>
+              <div class="setting-grid">
+                <label class="setting-field">
+                  <span>Minimum scan size</span>
+                  <input id="settingScanMin" name="scan_min_artwork_size" type="number" min="200" max="5000" step="50">
+                </label>
+                <label class="setting-field">
+                  <span>Preferred size</span>
+                  <input id="settingPreferred" name="preferred_artwork_size" type="number" min="200" max="5000" step="50">
+                </label>
+                <label class="setting-field">
+                  <span>Max embedded size</span>
+                  <input id="settingMaxEmbed" name="max_embedded_artwork_size" type="number" min="0" max="5000" step="50">
+                </label>
+              </div>
+              <div class="switch-list">
+                <label><input id="settingSaveFolder" name="save_approved_artwork_to_album_folder" type="checkbox"> Save cover.jpg in album folder</label>
+                <label><input id="settingBackupEmbed" name="backup_before_embed" type="checkbox"> Backup files before embed</label>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-panel" data-settings-panel="security">
+            <div class="setting-card">
+              <h3>Access</h3>
+              <label class="setting-field">
+                <span>NAS token</span>
+                <input id="settingToken" type="password" autocomplete="current-password" placeholder="Worker token">
+              </label>
+              <label class="setting-field">
+                <span>Token required</span>
+                <input id="settingTokenRequired" type="text" readonly>
+              </label>
+            </div>
+          </section>
+        </form>
+      </section>
+    </div>
     <script src="/app/app.js"></script>
   </body>
 </html>

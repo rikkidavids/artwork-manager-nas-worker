@@ -33,8 +33,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.10'
-APP_BUILD = '5.10'
+WORKER_BUILD = '5.11'
+APP_BUILD = '5.11'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -43,7 +43,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.10 adds the first NAS-hosted web UI.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.11 adds NAS web settings.'
 )
 
 
@@ -241,7 +241,7 @@ def status_payload(public: bool = False) -> Dict[str, Any]:
         'active_jobs': active,
         'recent_jobs': recent,
         'recent_job_count': len(recent),
-        'endpoints': ['GET /app/', 'GET /', 'GET /version', 'GET /health', 'GET /status', 'GET /api/app/status', 'GET /api/albums', 'GET /api/artwork/current', 'POST /api/scan/start', 'POST /scan-library', 'POST /embed', 'POST /deep-check', 'POST /path-check'],
+        'endpoints': ['GET /app/', 'GET /', 'GET /version', 'GET /health', 'GET /status', 'GET /api/app/status', 'GET /api/settings', 'GET /api/albums', 'GET /api/artwork/current', 'POST /api/settings', 'POST /api/scan/start', 'POST /scan-library', 'POST /embed', 'POST /deep-check', 'POST /path-check'],
         'update_hint': UPDATE_HINT,
         'build_marker': f'amw-worker-{WORKER_BUILD}-api-{WORKER_API}',
     }
@@ -631,6 +631,11 @@ CREATE TABLE IF NOT EXISTS history (
   payload TEXT,
   created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS app_settings (
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  payload TEXT,
+  updated_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_albums_status_artist_album ON albums(status, artist, album);
 CREATE INDEX IF NOT EXISTS idx_albums_path ON albums(album_path);
 '''
@@ -658,6 +663,113 @@ def db_connect() -> sqlite3.Connection:
     except Exception:
         pass
     return conn
+
+
+def web_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {'1', 'true', 'yes', 'on'}:
+        return True
+    if text in {'0', 'false', 'no', 'off'}:
+        return False
+    return bool(default)
+
+
+def web_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        out = int(value)
+    except Exception:
+        out = int(default)
+    return max(int(minimum), min(int(maximum), out))
+
+
+def web_default_settings() -> Dict[str, Any]:
+    scan_min = web_int(os.environ.get('AMW_SCAN_MIN_ARTWORK_SIZE') or 1000, 1000, 200, 5000)
+    preferred = web_int(os.environ.get('AMW_PREFERRED_ARTWORK_SIZE') or scan_min, scan_min, 200, 5000)
+    root = str(MUSIC_ROOTS[0]) if MUSIC_ROOTS else '/music'
+    return {
+        'library_root': root,
+        'resume_scans': True,
+        'include_missing': True,
+        'deep_scan_all_files': web_bool(os.environ.get('AMW_DEEP_SCAN_ALL_FILES'), False),
+        'scan_worker_threads': web_int(os.environ.get('AMW_SCAN_WORKERS') or 8, 8, 1, 32),
+        'scan_min_artwork_size': scan_min,
+        'preferred_artwork_size': preferred,
+        'target_size_match_mode': os.environ.get('AMW_TARGET_SIZE_MATCH_MODE') or 'Relaxed',
+        'save_approved_artwork_to_album_folder': web_bool(os.environ.get('AMW_SAVE_FOLDER_COVER'), False),
+        'max_embedded_artwork_size': web_int(os.environ.get('AMW_MAX_EMBEDDED_ARTWORK_SIZE') or 0, 0, 0, 5000),
+        'backup_before_embed': True,
+    }
+
+
+def web_get_settings() -> Dict[str, Any]:
+    settings = web_default_settings()
+    with db_connect() as conn:
+        row = conn.execute('SELECT payload FROM app_settings WHERE id=1').fetchone()
+    if row and row['payload']:
+        try:
+            stored = json.loads(row['payload'])
+            if isinstance(stored, dict):
+                settings.update(stored)
+        except Exception:
+            pass
+    settings['library_root'] = str(settings.get('library_root') or (str(MUSIC_ROOTS[0]) if MUSIC_ROOTS else '/music'))
+    settings['resume_scans'] = web_bool(settings.get('resume_scans'), True)
+    settings['include_missing'] = web_bool(settings.get('include_missing'), True)
+    settings['deep_scan_all_files'] = web_bool(settings.get('deep_scan_all_files'), False)
+    settings['scan_worker_threads'] = web_int(settings.get('scan_worker_threads'), 8, 1, 32)
+    settings['scan_min_artwork_size'] = web_int(settings.get('scan_min_artwork_size'), 1000, 200, 5000)
+    settings['preferred_artwork_size'] = web_int(settings.get('preferred_artwork_size'), settings['scan_min_artwork_size'], 200, 5000)
+    if str(settings.get('target_size_match_mode') or '').strip().lower() not in {'relaxed', 'strict'}:
+        settings['target_size_match_mode'] = 'Relaxed'
+    settings['target_size_match_mode'] = 'Strict' if str(settings.get('target_size_match_mode')).lower() == 'strict' else 'Relaxed'
+    settings['save_approved_artwork_to_album_folder'] = web_bool(settings.get('save_approved_artwork_to_album_folder'), False)
+    settings['max_embedded_artwork_size'] = web_int(settings.get('max_embedded_artwork_size'), 0, 0, 5000)
+    settings['backup_before_embed'] = web_bool(settings.get('backup_before_embed'), True)
+    return settings
+
+
+def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
+    current = web_get_settings()
+    allowed = {
+        'library_root',
+        'resume_scans',
+        'include_missing',
+        'deep_scan_all_files',
+        'scan_worker_threads',
+        'scan_min_artwork_size',
+        'preferred_artwork_size',
+        'target_size_match_mode',
+        'save_approved_artwork_to_album_folder',
+        'max_embedded_artwork_size',
+        'backup_before_embed',
+    }
+    for key in allowed:
+        if key in payload:
+            current[key] = payload.get(key)
+    current = {**web_default_settings(), **current}
+    # Validate through the normal getter path by temporarily applying coercions here.
+    current['resume_scans'] = web_bool(current.get('resume_scans'), True)
+    current['include_missing'] = web_bool(current.get('include_missing'), True)
+    current['deep_scan_all_files'] = web_bool(current.get('deep_scan_all_files'), False)
+    current['scan_worker_threads'] = web_int(current.get('scan_worker_threads'), 8, 1, 32)
+    current['scan_min_artwork_size'] = web_int(current.get('scan_min_artwork_size'), 1000, 200, 5000)
+    current['preferred_artwork_size'] = web_int(current.get('preferred_artwork_size'), current['scan_min_artwork_size'], 200, 5000)
+    current['target_size_match_mode'] = 'Strict' if str(current.get('target_size_match_mode') or '').strip().lower() == 'strict' else 'Relaxed'
+    current['save_approved_artwork_to_album_folder'] = web_bool(current.get('save_approved_artwork_to_album_folder'), False)
+    current['max_embedded_artwork_size'] = web_int(current.get('max_embedded_artwork_size'), 0, 0, 5000)
+    current['backup_before_embed'] = web_bool(current.get('backup_before_embed'), True)
+    with db_connect() as conn:
+        conn.execute(
+            'INSERT INTO app_settings(id, payload, updated_at) VALUES(1, ?, ?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at',
+            (json.dumps(current), now()),
+        )
+    return current
 
 
 def web_album_key(album_path: Any) -> str:
@@ -946,22 +1058,23 @@ def web_current_artwork(album_key: str) -> Tuple[bytes, str]:
 
 
 def web_default_scan_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    scan_min = int(payload.get('scan_min_artwork_size') or os.environ.get('AMW_SCAN_MIN_ARTWORK_SIZE') or 1000)
-    preferred = int(payload.get('preferred_artwork_size') or os.environ.get('AMW_PREFERRED_ARTWORK_SIZE') or scan_min)
-    root = str(payload.get('library_root') or (str(MUSIC_ROOTS[0]) if MUSIC_ROOTS else '/music'))
-    deep_scan = bool(payload.get('deep_scan_all_files', str(os.environ.get('AMW_DEEP_SCAN_ALL_FILES') or '').lower() in {'1', 'true', 'yes'}))
-    resume = bool(payload.get('resume', True))
+    settings = web_get_settings()
+    scan_min = web_int(payload.get('scan_min_artwork_size') or settings.get('scan_min_artwork_size'), 1000, 200, 5000)
+    preferred = web_int(payload.get('preferred_artwork_size') or settings.get('preferred_artwork_size') or scan_min, scan_min, 200, 5000)
+    root = str(payload.get('library_root') or settings.get('library_root') or (str(MUSIC_ROOTS[0]) if MUSIC_ROOTS else '/music'))
+    deep_scan = web_bool(payload.get('deep_scan_all_files'), web_bool(settings.get('deep_scan_all_files'), False))
+    resume = web_bool(payload.get('resume'), web_bool(settings.get('resume_scans'), True))
     return {
         'library_root': root,
         'album_folder': root,
-        'include_missing': bool(payload.get('include_missing', True)),
+        'include_missing': web_bool(payload.get('include_missing'), web_bool(settings.get('include_missing'), True)),
         'resume': resume,
         'deep_scan_all_files': deep_scan,
         'scan_min_artwork_size': scan_min,
         'preferred_artwork_size': preferred,
-        'target_size_match_mode': payload.get('target_size_match_mode') or os.environ.get('AMW_TARGET_SIZE_MATCH_MODE') or 'Relaxed',
-        'save_approved_artwork_to_album_folder': bool(payload.get('save_approved_artwork_to_album_folder', str(os.environ.get('AMW_SAVE_FOLDER_COVER') or '').lower() in {'1', 'true', 'yes'})),
-        'max_workers': int(payload.get('max_workers') or os.environ.get('AMW_SCAN_WORKERS') or 8),
+        'target_size_match_mode': payload.get('target_size_match_mode') or settings.get('target_size_match_mode') or 'Relaxed',
+        'save_approved_artwork_to_album_folder': web_bool(payload.get('save_approved_artwork_to_album_folder'), web_bool(settings.get('save_approved_artwork_to_album_folder'), False)),
+        'max_workers': web_int(payload.get('max_workers') or settings.get('scan_worker_threads'), 8, 1, 32),
         'known_albums': [] if deep_scan or not resume else web_existing_album_resume_info(),
     }
 
@@ -994,6 +1107,9 @@ def web_status_payload() -> Dict[str, Any]:
         'db_path': str(DB_PATH),
         'counts': web_queue_counts(),
         'music_roots': [str(path) for path in MUSIC_ROOTS],
+        'backup_root': str(BACKUP_ROOT),
+        'settings': web_get_settings(),
+        'token_required': bool(API_TOKEN),
     }
     return payload
 
@@ -1857,6 +1973,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, web_status_payload())
             return
+        if route == '/api/settings':
+            if not self._auth_ok():
+                self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            self._send(200, {
+                'ok': True,
+                'settings': web_get_settings(),
+                'music_roots': [str(path) for path in MUSIC_ROOTS],
+                'backup_root': str(BACKUP_ROOT),
+                'data_root': str(DATA_ROOT),
+                'token_required': bool(API_TOKEN),
+                'worker_build': WORKER_BUILD,
+                'api': WORKER_API,
+                'worker_api': WORKER_API,
+            })
+            return
         if route == '/api/albums':
             if not self._auth_ok():
                 self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
@@ -1898,6 +2030,10 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_json()
             route = self.path.rstrip('/')
             route = urlparse(route).path.rstrip('/')
+            if route == '/api/settings':
+                settings = web_save_settings(payload)
+                self._send(200, {'ok': True, 'settings': settings, 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
             if route == '/api/scan/start':
                 result = start_web_scan(payload)
                 self._send(200, result)
