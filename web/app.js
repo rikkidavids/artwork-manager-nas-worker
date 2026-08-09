@@ -515,7 +515,7 @@ function updateActionButtons() {
   el.candidatePanel.classList.toggle("compact", compactCandidate);
   el.candidateTitle.textContent = mode === "done" ? "Replacement Cover" : "Candidate";
   el.candidatePosition.classList.toggle("hidden", compactCandidate);
-  el.actionsTitle.textContent = "Next Step";
+  el.actionsTitle.textContent = "Actions";
   el.findArtworkBtn.textContent = mode === "done" ? "Search Again" : "Find Artwork";
   el.findArtworkBtn.classList.toggle("primary", mode !== "done");
   el.findArtworkBtn.classList.toggle("ghost", mode === "done");

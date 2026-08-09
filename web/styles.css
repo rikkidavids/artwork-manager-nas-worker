@@ -372,7 +372,8 @@ dt,
 }
 
 .detail-pane {
-  --cover-slot: clamp(300px, 31vw, 430px);
+  --cover-slot: clamp(260px, 25vw, 360px);
+  overflow: hidden;
 }
 
 .queue-pane {
@@ -597,8 +598,8 @@ tbody tr.selected {
   display: grid;
   flex: 0 0 auto;
   min-height: 0;
-  grid-template-columns: repeat(2, minmax(270px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 8px;
   align-items: stretch;
 }
 
@@ -606,12 +607,12 @@ tbody tr.selected {
 .notes-panel {
   min-height: 0;
   overflow: auto;
-  padding: 12px;
+  padding: 10px;
 }
 
 .art-panel {
   display: flex;
-  min-height: calc(var(--cover-slot) + 82px);
+  min-height: calc(var(--cover-slot) + 58px);
   flex-direction: column;
   overflow: hidden;
 }
@@ -628,7 +629,7 @@ tbody tr.selected {
   width: min(100%, var(--cover-slot));
   max-width: var(--cover-slot);
   aspect-ratio: 1 / 1;
-  margin: 14px auto 10px;
+  margin: 6px auto 6px;
   border: 1px dashed var(--line);
   border-radius: 8px;
   background: var(--cover-bg);
@@ -668,8 +669,8 @@ tbody tr.selected {
 #coverMeta,
 #candidateMeta {
   display: -webkit-box;
-  flex: 0 0 38px;
-  min-height: 38px;
+  flex: 0 0 24px;
+  min-height: 24px;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -692,24 +693,28 @@ tbody tr.selected {
 
 .review-bottom {
   display: grid;
-  flex: 1 1 auto;
-  min-height: 0;
-  grid-template-columns: minmax(320px, 1fr) minmax(300px, 0.85fr);
-  gap: 10px;
-  margin-top: 10px;
+  flex: 1 1 0;
+  min-height: 170px;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 8px;
+  overflow: hidden;
 }
 
 .actions-panel {
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
-  padding: 12px;
+  padding: 10px;
 }
 
 .actions-panel p {
-  min-height: 36px;
-  margin: 8px 0 12px;
+  min-height: 28px;
+  margin: 6px 0 10px;
   color: var(--muted);
   font-weight: 700;
 }
@@ -722,8 +727,8 @@ tbody tr.selected {
 .action-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 7px;
+  margin-top: 7px;
 }
 
 .primary-actions button {
@@ -737,13 +742,13 @@ tbody tr.selected {
 
 .summary-lead {
   min-height: 0;
-  margin-top: 12px;
+  margin-top: 8px;
   border-radius: 7px;
   background: var(--surface-soft);
   color: var(--field-text);
   font-weight: 800;
   line-height: 1.35;
-  padding: 10px 12px;
+  padding: 8px 10px;
 }
 
 .summary-lead.good {
@@ -764,8 +769,8 @@ tbody tr.selected {
 .summary-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 7px;
+  margin-top: 8px;
 }
 
 .summary-meta span {
@@ -1015,7 +1020,7 @@ tbody tr.selected {
   }
 
   .detail-pane {
-    --cover-slot: clamp(260px, 32vw, 360px);
+    --cover-slot: clamp(240px, 30vw, 330px);
   }
 
   .review-grid {
@@ -1060,6 +1065,11 @@ tbody tr.selected {
   }
 
   .workspace {
+    overflow: visible;
+  }
+
+  .detail-pane,
+  .review-bottom {
     overflow: visible;
   }
 
@@ -1163,6 +1173,10 @@ tbody tr.selected {
   .detail-pane {
     height: 100%;
     min-height: 0;
+  }
+
+  .detail-pane {
+    --cover-slot: min(calc(100vw - 56px), 360px);
   }
 
   body.detail-open .queue-pane {
