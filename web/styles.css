@@ -392,6 +392,11 @@ dt,
   min-width: 0;
 }
 
+.mobile-back {
+  display: none;
+  flex: 0 0 auto;
+}
+
 #albumTitle,
 #albumPath {
   overflow: hidden;
@@ -472,6 +477,12 @@ dt,
   scrollbar-gutter: stable;
 }
 
+.table-wrap:focus {
+  border-color: var(--focus-border);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+  outline: none;
+}
+
 table {
   width: 100%;
   min-width: 0;
@@ -536,7 +547,7 @@ tbody tr.selected {
 }
 
 .status-cell.good {
-  color: #526172;
+  color: var(--muted);
   font-weight: 700;
 }
 
@@ -639,6 +650,10 @@ tbody tr.selected {
   border-style: solid;
   background: var(--cover-solid-bg);
   box-shadow: var(--cover-shadow);
+}
+
+.cover-box.inspectable.has-cover {
+  cursor: zoom-in;
 }
 
 .cover-box.has-cover img {
@@ -756,6 +771,74 @@ tbody tr.selected {
   padding: 5px 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.artwork-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--overlay-bg);
+}
+
+.artwork-viewer {
+  display: grid;
+  width: min(920px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid var(--modal-line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--modal-shadow);
+}
+
+.artwork-viewer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px;
+}
+
+.artwork-viewer-head > div {
+  min-width: 0;
+}
+
+.artwork-viewer-head p {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artwork-viewer-frame {
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  padding: 14px;
+  background: var(--cover-bg);
+}
+
+.artwork-viewer-frame img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: calc(100vh - 190px);
+  border-radius: 8px;
+  box-shadow: var(--cover-shadow);
+}
+
+.artwork-viewer-nav {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding: 12px;
 }
 
 .settings-overlay {
@@ -908,6 +991,39 @@ tbody tr.selected {
 @media (max-width: 1180px) {
   body {
     min-width: 0;
+  }
+
+  .workspace {
+    grid-template-columns: minmax(360px, 0.82fr) minmax(440px, 1fr);
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .queue-pane,
+  .detail-pane {
+    padding: 10px;
+  }
+
+  .review-grid {
+    grid-template-columns: repeat(2, minmax(210px, 1fr));
+  }
+
+  .review-bottom {
+    grid-template-columns: 1fr;
+  }
+
+  .cover-box {
+    width: min(100%, 360px);
+  }
+
+  .settings-window {
+    grid-template-columns: 190px minmax(0, 1fr);
+    width: calc(100vw - 28px);
+  }
+}
+
+@media (max-width: 900px) {
+  body {
     overflow: auto;
   }
 
@@ -938,12 +1054,11 @@ tbody tr.selected {
   }
 
   .table-wrap {
-    min-height: 420px;
+    min-height: 390px;
   }
 
   .settings-window {
     grid-template-columns: 1fr;
-    width: calc(100vw - 28px);
   }
 
   .settings-sidebar {
@@ -965,5 +1080,240 @@ tbody tr.selected {
 
   .setting-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 740px) {
+  body {
+    overflow: hidden;
+  }
+
+  .shell {
+    height: 100dvh;
+    min-height: 0;
+  }
+
+  .topbar {
+    min-height: 0;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .app-title {
+    width: 100%;
+  }
+
+  .brand-mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    font-size: 11px;
+  }
+
+  h1 {
+    font-size: 17px;
+  }
+
+  h2 {
+    font-size: 17px;
+  }
+
+  h3 {
+    font-size: 14px;
+  }
+
+  button {
+    height: 36px;
+    padding: 0 10px;
+  }
+
+  .top-actions button {
+    flex: 1 1 0;
+  }
+
+  .unlock-panel,
+  .scan-panel {
+    margin: 8px 8px 0;
+  }
+
+  .unlock-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workspace {
+    display: block;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 8px;
+    overflow: hidden;
+  }
+
+  .queue-pane,
+  .detail-pane {
+    height: 100%;
+    min-height: 0;
+  }
+
+  body.detail-open .queue-pane {
+    display: none;
+  }
+
+  body:not(.detail-open) .detail-pane {
+    display: none;
+  }
+
+  body.detail-open .detail-pane {
+    display: flex;
+    overflow-y: auto;
+  }
+
+  .mobile-back {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .detail-head {
+    align-items: center;
+    gap: 8px;
+  }
+
+  .detail-head > div {
+    flex: 1 1 auto;
+  }
+
+  .status-pill {
+    padding: 5px 8px;
+  }
+
+  .queue-controls {
+    grid-template-rows: 34px 34px;
+    min-height: 76px;
+  }
+
+  .search {
+    height: 34px;
+    min-height: 34px;
+    max-height: 34px;
+    line-height: 34px;
+  }
+
+  .chip {
+    height: 32px;
+  }
+
+  .table-wrap {
+    min-height: 0;
+  }
+
+  th,
+  td {
+    height: 34px;
+    padding: 0 6px;
+  }
+
+  th:nth-child(1),
+  td:nth-child(1) {
+    width: 72px;
+  }
+
+  th:nth-child(2),
+  td:nth-child(2) {
+    width: 32%;
+  }
+
+  th:nth-child(4),
+  td:nth-child(4),
+  th:nth-child(5),
+  td:nth-child(5) {
+    display: none;
+  }
+
+  .review-grid,
+  .review-bottom {
+    gap: 8px;
+  }
+
+  .art-panel,
+  .notes-panel,
+  .actions-panel {
+    padding: 10px;
+  }
+
+  .cover-box {
+    width: min(100%, calc(100vw - 56px));
+    margin: 10px auto 8px;
+  }
+
+  #candidatePanel.compact {
+    min-height: 90px;
+  }
+
+  .actions-panel {
+    position: sticky;
+    bottom: -1px;
+    z-index: 3;
+    box-shadow: 0 -10px 24px rgba(22, 32, 43, 0.08);
+  }
+
+  .action-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .primary-actions button,
+  .quiet-actions button {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .settings-overlay {
+    padding: 0;
+  }
+
+  .settings-window {
+    width: 100vw;
+    max-height: 100dvh;
+    height: 100dvh;
+    border-radius: 0;
+    border: 0;
+  }
+
+  .settings-header {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 12px;
+  }
+
+  .settings-actions {
+    width: 100%;
+  }
+
+  .settings-actions button {
+    flex: 1 1 0;
+  }
+
+  .settings-panel {
+    padding: 12px;
+  }
+
+  .artwork-overlay {
+    padding: 0;
+  }
+
+  .artwork-viewer {
+    width: 100vw;
+    height: 100dvh;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .artwork-viewer-frame {
+    padding: 10px;
+  }
+
+  .artwork-viewer-frame img {
+    max-height: calc(100dvh - 156px);
   }
 }

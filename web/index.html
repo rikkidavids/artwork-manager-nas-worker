@@ -65,7 +65,7 @@
               <button class="chip" type="button" data-bucket="Done">Done</button>
             </div>
           </div>
-          <div class="table-wrap">
+          <div id="queueTableWrap" class="table-wrap" tabindex="0" role="region" aria-label="Album queue">
             <table>
               <thead>
                 <tr>
@@ -87,6 +87,7 @@
 
         <section id="detailPane" class="detail-pane">
           <div class="detail-head">
+            <button id="backToQueueBtn" class="ghost mobile-back" type="button">Queue</button>
             <div>
               <h2 id="albumTitle">No album selected</h2>
               <p id="albumPath">Scan the library or choose an album.</p>
@@ -97,7 +98,7 @@
           <div class="review-grid">
             <section id="currentPanel" class="art-panel">
               <h3>Current Cover</h3>
-              <div class="cover-box">
+              <div class="cover-box inspectable" data-artwork-kind="current" role="button" tabindex="0" aria-label="Inspect current cover">
                 <img id="currentCover" alt="">
                 <span id="coverPlaceholder">No artwork</span>
               </div>
@@ -109,7 +110,7 @@
                 <h3 id="candidateTitle">Candidate</h3>
                 <span id="candidatePosition">0 of 0</span>
               </div>
-              <div class="cover-box">
+              <div class="cover-box inspectable" data-artwork-kind="candidate" role="button" tabindex="0" aria-label="Inspect candidate cover">
                 <img id="candidateCover" alt="">
                 <span id="candidatePlaceholder">No candidate</span>
               </div>
@@ -298,6 +299,25 @@
             </div>
           </section>
         </form>
+      </section>
+    </div>
+
+    <div id="artworkOverlay" class="artwork-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="artworkViewerTitle">
+      <section class="artwork-viewer">
+        <header class="artwork-viewer-head">
+          <div>
+            <h2 id="artworkViewerTitle">Artwork</h2>
+            <p id="artworkViewerMeta">Inspect cover artwork.</p>
+          </div>
+          <button id="closeArtworkViewerBtn" class="ghost" type="button">Close</button>
+        </header>
+        <div class="artwork-viewer-frame">
+          <img id="artworkViewerImage" alt="">
+        </div>
+        <footer id="artworkViewerNav" class="artwork-viewer-nav">
+          <button id="viewerPrevBtn" class="ghost" type="button">Previous</button>
+          <button id="viewerNextBtn" class="ghost" type="button">Next</button>
+        </footer>
       </section>
     </div>
     <script src="/app/app.js"></script>

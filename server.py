@@ -36,8 +36,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.18'
-APP_BUILD = '5.18'
+WORKER_BUILD = '5.19'
+APP_BUILD = '5.19'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -46,7 +46,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.18 adds full queue loading, theme modes, and lighter web polling.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.19 adds mobile-friendly review screens, artwork inspection, keyboard queue navigation, accent-insensitive sorting/search, and scan-rule-aware resume checks.'
 )
 
 
@@ -318,7 +318,7 @@ def _resolve_unicode_equivalent_path(path: Path, root: Path) -> Tuple[Path, bool
             candidate = exact
             continue
         # Prefer a directory match when walking album folders, then deterministic name order.
-        matches.sort(key=lambda child: (not child.is_dir(), child.name.lower()))
+        matches.sort(key=lambda child: (not child.is_dir(), alpha_key(child.name)))
         candidate = matches[0]
         changed = True
     return candidate, changed
@@ -350,8 +350,14 @@ def safe_path(value: str) -> Path:
     raise ValueError(f'Path is outside allowed music roots: {p}')
 
 
+def fold_text(value: Any) -> str:
+    text = unicodedata.normalize('NFKD', str(value or ''))
+    text = ''.join(ch for ch in text if not unicodedata.combining(ch))
+    return text.casefold()
+
+
 def alpha_key(name: Any):
-    parts = re.split(r'(\d+)', str(name or '').lower())
+    parts = re.split(r'(\d+)', fold_text(name))
     return [int(part) if part.isdigit() else part for part in parts]
 
 
@@ -377,7 +383,7 @@ def clean_album_name(name: str) -> str:
 
 
 def normalize_for_match(name: str) -> str:
-    name = clean_album_name(name).lower()
+    name = fold_text(clean_album_name(name))
     name = re.sub(r'[^a-z0-9]+', ' ', name)
     return ' '.join(name.split())
 
@@ -583,7 +589,23 @@ def get_album_path(folder: Path, library_root: Path) -> Path:
     return library_root / parts[0] / parts[1] if len(parts) >= 2 else folder
 
 
-def folder_music_fingerprint(folder: Path, music_names: List[str]) -> Dict[str, Any]:
+def scan_rules_fingerprint(settings: Dict[str, Any]) -> Dict[str, Any]:
+    scan_min = int(settings.get('scan_min_artwork_size') or 1000)
+    rules = {
+        'version': 1,
+        'include_missing': bool(settings.get('include_missing', True)),
+        'deep_scan_all_files': bool(settings.get('deep_scan_all_files')),
+        'scan_min_artwork_size': scan_min,
+        'preferred_artwork_size': int(settings.get('preferred_artwork_size') or scan_min),
+        'target_size_match_mode': 'Strict' if str(settings.get('target_size_match_mode') or '').strip().lower() == 'strict' else 'Relaxed',
+        'save_approved_artwork_to_album_folder': bool(settings.get('save_approved_artwork_to_album_folder')),
+    }
+    payload = json.dumps(rules, sort_keys=True, separators=(',', ':'))
+    rules['digest'] = hashlib.sha1(payload.encode('utf-8')).hexdigest()
+    return rules
+
+
+def folder_music_fingerprint(folder: Path, music_names: List[str], scan_rules: Dict[str, Any] | None = None) -> Dict[str, Any]:
     parts = []
     total_size = 0
     max_mtime_ns = 0
@@ -600,11 +622,12 @@ def folder_music_fingerprint(folder: Path, music_names: List[str]) -> Dict[str, 
         parts.append(f'{name}\0{size}\0{mtime_ns}')
     digest = hashlib.sha1('\0'.join(parts).encode('utf-8', errors='ignore')).hexdigest()
     return {
-        'version': 1,
+        'version': 2 if scan_rules else 1,
         'file_count': len(music_names or []),
         'total_size': total_size,
         'max_mtime_ns': max_mtime_ns,
         'digest': digest,
+        'scan_rules': scan_rules or {},
     }
 
 
@@ -616,7 +639,8 @@ def fingerprint_matches(saved: Any, current: Any) -> bool:
         int(saved.get('file_count') or -1) == int(current.get('file_count') or -2) and
         int(saved.get('total_size') or -1) == int(current.get('total_size') or -2) and
         int(saved.get('max_mtime_ns') or -1) == int(current.get('max_mtime_ns') or -2) and
-        str(saved.get('digest') or '') == str(current.get('digest') or '')
+        str(saved.get('digest') or '') == str(current.get('digest') or '') and
+        str((saved.get('scan_rules') or {}).get('digest') or '') == str((current.get('scan_rules') or {}).get('digest') or '')
     )
 
 
@@ -706,6 +730,7 @@ def init_web_db() -> None:
     TEMP_CANDIDATE_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
+        configure_db_connection(conn)
         try:
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute('PRAGMA synchronous=NORMAL')
@@ -719,10 +744,20 @@ def init_web_db() -> None:
                     conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {typ}')
 
 
+def configure_db_connection(conn: sqlite3.Connection) -> None:
+    try:
+        conn.create_function('amw_fold', 1, fold_text, deterministic=True)
+    except TypeError:
+        conn.create_function('amw_fold', 1, fold_text)
+    except Exception:
+        pass
+
+
 def db_connect() -> sqlite3.Connection:
     init_web_db()
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    configure_db_connection(conn)
     try:
         conn.execute('PRAGMA busy_timeout=5000')
         conn.execute('PRAGMA synchronous=NORMAL')
@@ -1091,7 +1126,7 @@ def web_album_from_row(row: sqlite3.Row) -> Dict[str, Any]:
 
 def web_query_albums(params: Dict[str, List[str]]) -> Dict[str, Any]:
     bucket = (params.get('bucket') or ['All'])[0]
-    query = ((params.get('q') or [''])[0] or '').strip().lower()
+    query = fold_text(((params.get('q') or [''])[0] or '').strip())
     raw_limit = ((params.get('limit') or ['0'])[0] or '0').strip()
     try:
         limit = max(0, min(int(raw_limit), 50000))
@@ -1113,7 +1148,7 @@ def web_query_albums(params: Dict[str, List[str]]) -> Dict[str, Any]:
         args.extend(handled)
     if query:
         where.append(
-            "lower(COALESCE(a.artist,'') || ' ' || COALESCE(a.album,'') || ' ' || COALESCE(a.album_path,'')) LIKE ?"
+            "amw_fold(COALESCE(a.artist,'') || ' ' || COALESCE(a.album,'') || ' ' || COALESCE(a.album_path,'')) LIKE ?"
         )
         args.append(f'%{query}%')
     where_sql = f"WHERE {' AND '.join(where)}" if where else ''
@@ -1127,7 +1162,7 @@ def web_query_albums(params: Dict[str, List[str]]) -> Dict[str, Any]:
             FROM albums a LEFT JOIN candidates c ON c.album_key=a.album_key
             {where_sql}
             GROUP BY a.album_key
-            ORDER BY lower(a.artist), lower(a.album), lower(a.album_path)
+            ORDER BY amw_fold(a.artist), amw_fold(a.album), amw_fold(a.album_path)
             {limit_sql}
             ''',
             args,
@@ -2593,6 +2628,7 @@ def scan_library_job(payload: Dict[str, Any], job_id: str = '') -> Dict[str, Any
         'target_size_match_mode': payload.get('target_size_match_mode') or 'Relaxed',
         'save_approved_artwork_to_album_folder': bool(payload.get('save_approved_artwork_to_album_folder')),
     }
+    scan_rules = scan_rules_fingerprint(settings)
     known_by_path: Dict[str, Dict[str, Any]] = {}
     if resume and not deep_scan:
         for item in payload.get('known_albums') or []:
@@ -2694,7 +2730,7 @@ def scan_library_job(payload: Dict[str, Any], job_id: str = '') -> Dict[str, Any
             fingerprint = None
             if existing and resume and not deep_scan:
                 saved_fingerprint = existing.get('scan_fingerprint')
-                fingerprint = folder_music_fingerprint(folder, music)
+                fingerprint = folder_music_fingerprint(folder, music, scan_rules)
                 if saved_fingerprint:
                     if fingerprint_matches(saved_fingerprint, fingerprint):
                         skipped += 1
@@ -2713,7 +2749,7 @@ def scan_library_job(payload: Dict[str, Any], job_id: str = '') -> Dict[str, Any
                     publish_progress('walking')
                     continue
             if fingerprint is None:
-                fingerprint = folder_music_fingerprint(folder, music)
+                fingerprint = folder_music_fingerprint(folder, music, scan_rules)
 
             pending.add(executor.submit(analyze_scan_album, folder, library_root, files, music, fingerprint, settings))
             if len(pending) >= max_pending:
@@ -2724,7 +2760,7 @@ def scan_library_job(payload: Dict[str, Any], job_id: str = '') -> Dict[str, Any
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
             collect_done(done)
 
-    albums.sort(key=lambda item: (str(item.get('artist') or '').lower(), str(item.get('album') or '').lower(), str(item.get('album_path') or '').lower()))
+    albums.sort(key=lambda item: (alpha_key(item.get('artist')), alpha_key(item.get('album')), alpha_key(item.get('album_path'))))
     publish_progress('finishing', force=True)
     return {
         'library_root': str(library_root),

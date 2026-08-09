@@ -16,6 +16,9 @@ const state = {
   queueSignature: "",
   tickTimer: 0,
   searchTimer: 0,
+  detailOpen: false,
+  viewerOpen: false,
+  viewerKind: "",
 };
 
 const el = {
@@ -30,8 +33,10 @@ const el = {
   scanText: document.getElementById("scanText"),
   shownCount: document.getElementById("shownCount"),
   searchInput: document.getElementById("searchInput"),
+  queueTableWrap: document.getElementById("queueTableWrap"),
   albumRows: document.getElementById("albumRows"),
   detailPane: document.getElementById("detailPane"),
+  backToQueueBtn: document.getElementById("backToQueueBtn"),
   albumTitle: document.getElementById("albumTitle"),
   albumPath: document.getElementById("albumPath"),
   albumStatus: document.getElementById("albumStatus"),
@@ -90,6 +95,14 @@ const el = {
   settingProviderWorkers: document.getElementById("settingProviderWorkers"),
   settingToken: document.getElementById("settingToken"),
   settingTokenRequired: document.getElementById("settingTokenRequired"),
+  artworkOverlay: document.getElementById("artworkOverlay"),
+  artworkViewerTitle: document.getElementById("artworkViewerTitle"),
+  artworkViewerMeta: document.getElementById("artworkViewerMeta"),
+  artworkViewerImage: document.getElementById("artworkViewerImage"),
+  artworkViewerNav: document.getElementById("artworkViewerNav"),
+  closeArtworkViewerBtn: document.getElementById("closeArtworkViewerBtn"),
+  viewerPrevBtn: document.getElementById("viewerPrevBtn"),
+  viewerNextBtn: document.getElementById("viewerNextBtn"),
 };
 
 function headers() {
@@ -225,6 +238,43 @@ function selectedCandidate() {
   return state.candidates[state.candidateIndex] || null;
 }
 
+function isPhoneLayout() {
+  return window.matchMedia && window.matchMedia("(max-width: 740px)").matches;
+}
+
+function selectedIndex() {
+  return state.albums.findIndex((item) => item.album_key === state.selectedKey);
+}
+
+function syncResponsiveState() {
+  const detailVisible = isPhoneLayout() && state.detailOpen && Boolean(state.selectedKey);
+  document.body.classList.toggle("detail-open", detailVisible);
+}
+
+function focusQueue() {
+  if (el.queueTableWrap) {
+    el.queueTableWrap.focus({ preventScroll: true });
+  }
+}
+
+function selectedRow() {
+  if (!state.selectedKey) return null;
+  return Array.from(el.albumRows.querySelectorAll("tr[data-album-key]")).find((row) => row.dataset.albumKey === state.selectedKey) || null;
+}
+
+function scrollSelectedIntoView() {
+  const row = selectedRow();
+  if (row) row.scrollIntoView({ block: "nearest" });
+}
+
+function moveQueueSelection(delta) {
+  if (!state.albums.length) return;
+  const current = selectedIndex();
+  const next = Math.max(0, Math.min(state.albums.length - 1, (current < 0 ? 0 : current) + delta));
+  selectAlbum(state.albums[next].album_key, { openDetail: false, focusQueue: true });
+  scrollSelectedIntoView();
+}
+
 function idleActionMessage(album = selectedAlbum()) {
   if (!album) return "Select an album to begin.";
   const mode = workflowMode(album);
@@ -236,6 +286,12 @@ function idleActionMessage(album = selectedAlbum()) {
 
 function setVisible(node, visible) {
   node.classList.toggle("hidden", !visible);
+}
+
+function hasCover(kind) {
+  if (kind === "current") return Boolean(state.coverUrl && selectedAlbum());
+  if (kind === "candidate") return Boolean(state.candidateUrl && selectedCandidate());
+  return false;
 }
 
 function candidateLabel(candidate) {
@@ -538,6 +594,7 @@ function renderRows() {
     const row = document.createElement("tr");
     row.dataset.albumKey = album.album_key;
     row.classList.toggle("selected", album.album_key === state.selectedKey);
+    row.setAttribute("aria-selected", album.album_key === state.selectedKey ? "true" : "false");
     [album.status_label || "", album.artist || "", album.album || "", album.size_label || "", album.candidate_count || 0].forEach((value, index) => {
       const cell = document.createElement("td");
       cell.title = value;
@@ -574,7 +631,8 @@ async function refreshQueue(options = {}) {
     state.queueSignature = signature;
     setCounts(counts);
     if (!state.albums.find((album) => album.album_key === state.selectedKey)) {
-      state.selectedKey = state.albums[0]?.album_key || "";
+      state.selectedKey = isPhoneLayout() ? "" : state.albums[0]?.album_key || "";
+      state.detailOpen = false;
     }
     if (queueChanged) renderRows();
     if (queueChanged || previousSelected !== state.selectedKey || force) {
@@ -601,6 +659,7 @@ async function loadCover(album) {
   el.coverPlaceholder.textContent = "No artwork";
   if (!album) {
     el.coverMeta.textContent = "No cover selected.";
+    updateArtworkViewer();
     return;
   }
   try {
@@ -614,9 +673,11 @@ async function loadCover(album) {
     el.currentCover.src = state.coverUrl;
     box.classList.add("has-cover");
     el.coverMeta.textContent = album.size_label || "Current artwork";
+    updateArtworkViewer();
   } catch (error) {
     el.coverPlaceholder.textContent = "No artwork";
     el.coverMeta.textContent = album.status_reason || "No readable embedded cover.";
+    updateArtworkViewer();
   }
 }
 
@@ -631,6 +692,7 @@ async function loadCandidateCover(candidate) {
   el.candidateCover.removeAttribute("src");
   el.candidatePlaceholder.textContent = "No candidate";
   if (!candidate) {
+    updateArtworkViewer();
     return;
   }
   try {
@@ -643,8 +705,10 @@ async function loadCandidateCover(candidate) {
     state.candidateUrl = URL.createObjectURL(blob);
     el.candidateCover.src = state.candidateUrl;
     box.classList.add("has-cover");
+    updateArtworkViewer();
   } catch (error) {
     el.candidatePlaceholder.textContent = "Candidate unavailable";
+    updateArtworkViewer();
   }
 }
 
@@ -701,9 +765,12 @@ async function refreshCandidates(album) {
 
 function renderSelected() {
   const album = selectedAlbum();
-  document.querySelectorAll("tbody tr").forEach((row) => {
-    row.classList.toggle("selected", row.dataset.albumKey === state.selectedKey);
+  el.albumRows.querySelectorAll("tr").forEach((row) => {
+    const selected = row.dataset.albumKey === state.selectedKey;
+    row.classList.toggle("selected", selected);
+    if (row.dataset.albumKey) row.setAttribute("aria-selected", selected ? "true" : "false");
   });
+  syncResponsiveState();
   if (!album) {
     el.albumTitle.textContent = "No album selected";
     el.albumPath.textContent = "Scan the library or choose an album.";
@@ -742,9 +809,11 @@ function renderSelected() {
   updateActionButtons();
 }
 
-function selectAlbum(albumKey) {
+function selectAlbum(albumKey, options = {}) {
   state.selectedKey = albumKey || "";
+  state.detailOpen = options.openDetail === false ? state.detailOpen : Boolean(state.selectedKey);
   renderSelected();
+  if (options.focusQueue) focusQueue();
 }
 
 async function startScan() {
@@ -851,6 +920,60 @@ function openGoogleImages() {
   if (url) window.open(url, "_blank", "noopener");
 }
 
+function artworkViewerPayload(kind = state.viewerKind) {
+  const album = selectedAlbum();
+  if (kind === "candidate") {
+    const candidate = selectedCandidate();
+    if (!candidate || !state.candidateUrl) return null;
+    return {
+      src: state.candidateUrl,
+      title: "Replacement Cover",
+      meta: candidateLabel(candidate),
+      navigable: state.candidates.length > 1,
+    };
+  }
+  if (!album || !state.coverUrl) return null;
+  return {
+    src: state.coverUrl,
+    title: "Current Cover",
+    meta: [album.artist, album.album, album.size_label].filter(Boolean).join(" - "),
+    navigable: false,
+  };
+}
+
+function updateArtworkViewer() {
+  if (!state.viewerOpen) return;
+  const payload = artworkViewerPayload();
+  if (!payload) {
+    closeArtworkViewer();
+    return;
+  }
+  el.artworkViewerTitle.textContent = payload.title;
+  el.artworkViewerMeta.textContent = payload.meta || "Artwork";
+  el.artworkViewerImage.src = payload.src;
+  el.artworkViewerNav.classList.toggle("hidden", !payload.navigable);
+  el.viewerPrevBtn.disabled = !payload.navigable;
+  el.viewerNextBtn.disabled = !payload.navigable;
+}
+
+function openArtworkViewer(kind) {
+  if (!hasCover(kind)) return;
+  state.viewerOpen = true;
+  state.viewerKind = kind;
+  el.artworkOverlay.classList.remove("hidden");
+  document.body.classList.add("viewer-open");
+  updateArtworkViewer();
+  el.closeArtworkViewerBtn.focus({ preventScroll: true });
+}
+
+function closeArtworkViewer() {
+  state.viewerOpen = false;
+  state.viewerKind = "";
+  el.artworkOverlay.classList.add("hidden");
+  document.body.classList.remove("viewer-open");
+  el.artworkViewerImage.removeAttribute("src");
+}
+
 function bind() {
   el.refreshBtn.addEventListener("click", async () => {
     await refreshStatus();
@@ -859,6 +982,11 @@ function bind() {
   });
   el.settingsBtn.addEventListener("click", () => openSettings("general"));
   el.unlockSettingsBtn.addEventListener("click", () => openSettings("security"));
+  el.backToQueueBtn.addEventListener("click", () => {
+    state.detailOpen = false;
+    syncResponsiveState();
+    focusQueue();
+  });
   el.closeSettingsBtn.addEventListener("click", closeSettings);
   el.settingsForm.addEventListener("submit", saveSettings);
   el.settingsOverlay.addEventListener("click", (event) => {
@@ -880,7 +1008,24 @@ function bind() {
   el.skipAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/skip", "Skipped for now."));
   el.albumRows.addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-album-key]");
-    if (row) selectAlbum(row.dataset.albumKey);
+    if (row) selectAlbum(row.dataset.albumKey, { focusQueue: true });
+  });
+  el.queueTableWrap.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveQueueSelection(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveQueueSelection(-1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      if (state.albums.length) selectAlbum(state.albums[0].album_key, { openDetail: false, focusQueue: true });
+      scrollSelectedIntoView();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      if (state.albums.length) selectAlbum(state.albums[state.albums.length - 1].album_key, { openDetail: false, focusQueue: true });
+      scrollSelectedIntoView();
+    }
   });
   el.searchInput.addEventListener("input", () => {
     state.query = el.searchInput.value.trim();
@@ -894,6 +1039,36 @@ function bind() {
       refreshQueue({ force: true });
     });
   });
+  document.querySelectorAll(".cover-box.inspectable").forEach((box) => {
+    const open = () => openArtworkViewer(box.dataset.artworkKind || "current");
+    box.addEventListener("click", open);
+    box.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        open();
+      }
+    });
+  });
+  el.closeArtworkViewerBtn.addEventListener("click", closeArtworkViewer);
+  el.artworkOverlay.addEventListener("click", (event) => {
+    if (event.target === el.artworkOverlay) closeArtworkViewer();
+  });
+  el.viewerPrevBtn.addEventListener("click", () => moveCandidate(-1));
+  el.viewerNextBtn.addEventListener("click", () => moveCandidate(1));
+  document.addEventListener("keydown", (event) => {
+    if (!state.viewerOpen) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeArtworkViewer();
+    } else if (event.key === "ArrowLeft" && state.viewerKind === "candidate") {
+      event.preventDefault();
+      moveCandidate(-1);
+    } else if (event.key === "ArrowRight" && state.viewerKind === "candidate") {
+      event.preventDefault();
+      moveCandidate(1);
+    }
+  });
+  window.addEventListener("resize", syncResponsiveState);
   document.addEventListener("visibilitychange", () => scheduleTick(document.hidden ? 30000 : 500));
   if (window.matchMedia) {
     const schemeWatcher = window.matchMedia("(prefers-color-scheme: dark)");
@@ -935,5 +1110,6 @@ async function tick() {
 }
 
 applyTheme(localStorage.getItem("amwThemeMode") || "Auto");
+syncResponsiveState();
 bind();
 refreshStatus().then(() => refreshQueue({ force: true })).finally(() => scheduleTick());
