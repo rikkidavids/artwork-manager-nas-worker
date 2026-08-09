@@ -7,7 +7,7 @@ import sys
 import urllib.error
 import urllib.request
 
-EXPECTED_BUILD = '5.24'
+EXPECTED_BUILD = '5.25'
 MIN_API = 5
 
 
