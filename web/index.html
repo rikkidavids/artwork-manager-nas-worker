@@ -133,9 +133,11 @@
             <section class="actions-panel">
               <h3 id="actionsTitle">Actions</h3>
               <p id="actionMessage">Select an album to begin.</p>
+              <input id="importImageInput" class="file-input" type="file" accept="image/*">
               <div id="primaryActionRow" class="action-row primary-actions">
                 <button id="findArtworkBtn" class="primary" type="button">Find Artwork</button>
                 <button id="approveEmbedBtn" class="success" type="button">Approve + Embed</button>
+                <button id="convertCurrentBtn" class="ghost" type="button">Convert Current</button>
               </div>
               <div id="candidateActionRow" class="action-row">
                 <button id="prevCandidateBtn" class="ghost" type="button">Previous</button>
@@ -143,6 +145,7 @@
                 <button id="rejectCandidateBtn" class="ghost danger-text" type="button">Reject Option</button>
               </div>
               <div id="quietActionRow" class="action-row quiet-actions">
+                <button id="importImageBtn" class="ghost" type="button">Import Image</button>
                 <button id="openSourceBtn" class="ghost" type="button">Open Source</button>
                 <button id="googleImagesBtn" class="ghost" type="button">Google Images</button>
                 <button id="markGoodBtn" class="ghost" type="button">Mark Good</button>

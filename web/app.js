@@ -60,11 +60,14 @@ const el = {
   primaryActionRow: document.getElementById("primaryActionRow"),
   candidateActionRow: document.getElementById("candidateActionRow"),
   quietActionRow: document.getElementById("quietActionRow"),
+  importImageInput: document.getElementById("importImageInput"),
   findArtworkBtn: document.getElementById("findArtworkBtn"),
   approveEmbedBtn: document.getElementById("approveEmbedBtn"),
+  convertCurrentBtn: document.getElementById("convertCurrentBtn"),
   prevCandidateBtn: document.getElementById("prevCandidateBtn"),
   nextCandidateBtn: document.getElementById("nextCandidateBtn"),
   rejectCandidateBtn: document.getElementById("rejectCandidateBtn"),
+  importImageBtn: document.getElementById("importImageBtn"),
   openSourceBtn: document.getElementById("openSourceBtn"),
   googleImagesBtn: document.getElementById("googleImagesBtn"),
   markGoodBtn: document.getElementById("markGoodBtn"),
@@ -127,6 +130,18 @@ async function api(path, options = {}) {
   }
   el.unlockPanel.classList.add("hidden");
   return payload;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = String(reader.result || "");
+      resolve(value.includes(",") ? value.split(",", 2)[1] : value);
+    };
+    reader.onerror = () => reject(reader.error || new Error("Image could not be read."));
+    reader.readAsDataURL(file);
+  });
 }
 
 function fmt(value) {
@@ -207,7 +222,7 @@ function nextLabel(album) {
   if (isDoneAlbum(album)) return "Nothing needed.";
   if (album.bucket === "Review") return "Approve or reject.";
   if (album.status === "missing_artwork") return "Find a cover.";
-  if (album.status === "incompatible_artwork") return "Convert or replace.";
+  if (["incompatible_artwork", "not_square_artwork"].includes(album.status)) return "Convert or replace.";
   if (album.status === "no_candidate") return "Try another search.";
   return "Find artwork.";
 }
@@ -481,7 +496,7 @@ function activeScanJob(status) {
 
 function activeReviewJob(status) {
   const jobs = Array.isArray(status.active_jobs) ? status.active_jobs : [];
-  return jobs.find((job) => job && ["artwork-search", "approve-embed"].includes(job.kind));
+  return jobs.find((job) => job && ["artwork-search", "approve-embed", "convert-current"].includes(job.kind));
 }
 
 function renderScan(status) {
@@ -520,6 +535,7 @@ function updateActionButtons() {
   const showCandidateActions = hasCandidate || mode === "review";
   const showAlbumTools = hasAlbum && (sourceUrl || mode !== "empty");
   const compactCandidate = (mode === "done" || mode === "empty") && !hasCandidate;
+  const canConvertCurrent = hasAlbum && ["incompatible_artwork", "not_square_artwork"].includes(album.status);
 
   el.detailPane.classList.remove("mode-empty", "mode-work", "mode-review", "mode-done");
   el.detailPane.classList.add(`mode-${mode}`);
@@ -534,11 +550,13 @@ function updateActionButtons() {
   setVisible(el.primaryActionRow, hasAlbum);
   setVisible(el.findArtworkBtn, hasAlbum);
   setVisible(el.approveEmbedBtn, mode !== "done" || hasCandidate);
+  setVisible(el.convertCurrentBtn, canConvertCurrent);
   setVisible(el.candidateActionRow, showCandidateActions);
   setVisible(el.prevCandidateBtn, state.candidates.length > 1);
   setVisible(el.nextCandidateBtn, state.candidates.length > 1);
   setVisible(el.rejectCandidateBtn, hasCandidate);
   setVisible(el.quietActionRow, showAlbumTools);
+  setVisible(el.importImageBtn, hasAlbum);
   setVisible(el.openSourceBtn, Boolean(sourceUrl));
   setVisible(el.googleImagesBtn, hasAlbum);
   setVisible(el.markGoodBtn, hasAlbum && mode !== "done");
@@ -546,9 +564,11 @@ function updateActionButtons() {
 
   el.findArtworkBtn.disabled = !hasAlbum || busy;
   el.approveEmbedBtn.disabled = !album || !hasCandidate || busy;
+  el.convertCurrentBtn.disabled = !canConvertCurrent || busy;
   el.prevCandidateBtn.disabled = !canNavigateCandidates;
   el.nextCandidateBtn.disabled = !canNavigateCandidates;
   el.rejectCandidateBtn.disabled = !album || !hasCandidate || busy;
+  el.importImageBtn.disabled = !album || busy;
   el.openSourceBtn.disabled = !sourceUrl;
   el.googleImagesBtn.disabled = !album;
   el.markGoodBtn.disabled = !album || busy;
@@ -560,7 +580,9 @@ function renderReviewJob(status) {
   state.actionActive = Boolean(job);
   if (job) {
     const count = job.candidate_count ? ` - ${fmt(job.candidate_count)} option(s)` : "";
-    const label = job.kind === "approve-embed" ? "Embedding artwork" : "Searching artwork";
+    const label = job.kind === "approve-embed"
+      ? "Embedding artwork"
+      : (job.kind === "convert-current" ? "Converting current artwork" : "Searching artwork");
     el.actionMessage.textContent = `${label}${count}...`;
   }
   updateActionButtons();
@@ -755,19 +777,19 @@ function renderCandidate() {
   updateActionButtons();
 }
 
-async function refreshCandidates(album) {
+async function refreshCandidates(album, preferredCandidateId = null) {
   if (!album) {
     state.candidates = [];
     state.candidateIndex = 0;
     renderCandidate();
     return;
   }
-  const previousId = selectedCandidate()?.candidate_id;
+  const previousId = preferredCandidateId || selectedCandidate()?.candidate_id;
   try {
     const payload = await api(`/api/candidates?album_key=${encodeURIComponent(album.album_key)}`);
     if (album.album_key !== state.selectedKey) return;
     state.candidates = payload.candidates || [];
-    const previousIndex = state.candidates.findIndex((candidate) => candidate.candidate_id === previousId);
+    const previousIndex = state.candidates.findIndex((candidate) => String(candidate.candidate_id) === String(previousId));
     state.candidateIndex = previousIndex >= 0 ? previousIndex : 0;
     renderCandidate();
   } catch (error) {
@@ -924,6 +946,66 @@ async function approveSelectedCandidate() {
   }
 }
 
+function openImportImagePicker() {
+  if (!selectedAlbum()) return;
+  el.importImageInput.click();
+}
+
+async function importSelectedImage(file) {
+  const album = selectedAlbum();
+  if (!album || !file) return;
+  if (file.size > 25_000_000) {
+    el.actionMessage.textContent = "That image is too large to import.";
+    return;
+  }
+  state.actionActive = true;
+  el.actionMessage.textContent = "Importing image...";
+  updateActionButtons();
+  try {
+    const imageB64 = await fileToBase64(file);
+    const payload = await api("/api/artwork/import", {
+      method: "POST",
+      body: JSON.stringify({
+        album_key: album.album_key,
+        filename: file.name || "Imported image",
+        mime: file.type || "",
+        image_b64: imageB64,
+      }),
+    });
+    state.actionActive = false;
+    await refreshStatus();
+    await refreshQueue({ force: true });
+    await refreshCandidates(selectedAlbum(), payload.candidate_id);
+    el.actionMessage.textContent = "Imported image. Review it, then approve or reject it.";
+  } catch (error) {
+    state.actionActive = false;
+    el.actionMessage.textContent = error.message || "Image could not be imported.";
+    updateActionButtons();
+  } finally {
+    el.importImageInput.value = "";
+  }
+}
+
+async function convertCurrentArtwork() {
+  const album = selectedAlbum();
+  if (!album) return;
+  state.actionActive = true;
+  el.actionMessage.textContent = "Converting current artwork on the NAS...";
+  updateActionButtons();
+  try {
+    await api("/api/artwork/convert-current", {
+      method: "POST",
+      body: JSON.stringify({ album_key: album.album_key }),
+    });
+    await refreshStatus();
+    scheduleTick(500);
+  } catch (error) {
+    state.actionActive = false;
+    el.actionMessage.textContent = error.message || "Current artwork could not be converted.";
+    updateActionButtons();
+  }
+}
+
 async function rejectSelectedCandidate() {
   const album = selectedAlbum();
   const candidate = selectedCandidate();
@@ -1052,9 +1134,12 @@ function bind() {
   if (el.freshScanBtn) el.freshScanBtn.addEventListener("click", startFreshScanFromSettings);
   el.findArtworkBtn.addEventListener("click", startArtworkSearch);
   el.approveEmbedBtn.addEventListener("click", approveSelectedCandidate);
+  el.convertCurrentBtn.addEventListener("click", convertCurrentArtwork);
   el.rejectCandidateBtn.addEventListener("click", rejectSelectedCandidate);
   el.prevCandidateBtn.addEventListener("click", () => moveCandidate(-1));
   el.nextCandidateBtn.addEventListener("click", () => moveCandidate(1));
+  el.importImageBtn.addEventListener("click", openImportImagePicker);
+  el.importImageInput.addEventListener("change", () => importSelectedImage(el.importImageInput.files?.[0]));
   el.openSourceBtn.addEventListener("click", openSourcePage);
   el.googleImagesBtn.addEventListener("click", openGoogleImages);
   el.markGoodBtn.addEventListener("click", () => runAlbumAction("/api/album/mark-good", "Marked as good."));

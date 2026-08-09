@@ -49,4 +49,4 @@ echo
 echo "From your Mac, check:"
 echo "  http://YOUR-NAS-IP:8765/"
 echo
-echo "You should see worker_build 5.25 and api 5."
+echo "You should see worker_build 5.26 and api 5."

@@ -2,7 +2,7 @@
 
 NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.25**
+Current worker build: **5.26**
 Worker API: **5**
 
 ## Why This Repo Exists
@@ -17,13 +17,13 @@ Synology Container Manager can then update the worker like a normal container im
 
 The publishing workflow template is included at `github-actions/docker-image.yml`. To activate image publishing, copy that file to `.github/workflows/docker-image.yml` in GitHub or push it from a Git token with `workflow` scope.
 
-Build 5.25 tightens queue status labels so narrow columns stay readable. Albums that need a provider lookup now show **Search**, and albums with no saved provider result show **No Cover**.
+Build 5.26 adds two practical web workflow tools: import an image from the browser as a saved replacement cover, and convert/save the current embedded cover directly on the NAS when an album needs rewriting.
 
 ## Web App Function Plan
 
 - **Queue:** scan the library, skip unchanged folders, filter by All / Needs Work / Review / Done, search the queue, show saved candidate counts, and keep the selected album stable while scans run.
 - **Review:** compare current artwork with a candidate, search providers, cycle candidates, approve/embed, reject poor options, skip albums, mark existing artwork good, and open Google Images or the source page when manual checking is needed.
-- **Artwork Sources:** Deezer and Apple/iTunes are built in first because they are fast and need no account. MusicBrainz, Discogs, fanart.tv, manual URL import, and browser image upload are planned next.
+- **Artwork Sources:** Deezer and Apple/iTunes are built in first because they are fast and need no account. Browser image upload is included, with MusicBrainz, Discogs, fanart.tv, and manual URL import still good candidates for later.
 - **Library Maintenance:** run deep checks, convert/save current embedded artwork, repair queue states, show problem files, and export diagnostics from the web UI.
 - **Safety:** keep token access, optional backups before embed, folder-cover saving, clear history, and eventually one-click restore.
 - **Clean UI Direction:** keep the queue-left/review-right workbench, avoid dashboard clutter, put counts only where they help decisions, and keep advanced tools behind settings or a simple album tools menu.
@@ -90,7 +90,7 @@ http://YOUR-NAS-IP:8765/app/
 Open the plain worker status at `http://YOUR-NAS-IP:8765/` without a browser UI check. You should see:
 
 ```text
-worker_build: "5.16"
+worker_build: "5.26"
 api: 5
 ```
 

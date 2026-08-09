@@ -36,8 +36,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.25'
-APP_BUILD = '5.25'
+WORKER_BUILD = '5.26'
+APP_BUILD = '5.26'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -46,7 +46,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.25 tightens queue status labels so they fit cleanly.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.26 adds manual artwork import and convert-current actions.'
 )
 
 
@@ -254,7 +254,8 @@ def status_payload(public: bool = False) -> Dict[str, Any]:
             'GET /api/app/status', 'GET /api/settings', 'GET /api/albums',
             'GET /api/candidates', 'GET /api/artwork/current', 'GET /api/artwork/candidate',
             'POST /api/settings', 'POST /api/scan/start', 'POST /api/library/clear', 'POST /api/artwork/search',
-            'POST /api/artwork/approve', 'POST /api/artwork/reject', 'POST /api/album/skip',
+            'POST /api/artwork/import', 'POST /api/artwork/approve', 'POST /api/artwork/convert-current',
+            'POST /api/artwork/reject', 'POST /api/album/skip',
             'POST /api/album/mark-good', 'POST /scan-library', 'POST /embed', 'POST /deep-check',
             'POST /path-check',
         ],
@@ -1710,6 +1711,109 @@ def web_download_candidate_image(
     }
 
 
+def web_import_image_bytes(payload: Dict[str, Any]) -> Tuple[bytes, str, str, str]:
+    filename = str(payload.get('filename') or '').strip()
+    content_type = str(payload.get('mime') or '').strip()
+    source_url = str(payload.get('source_url') or '').strip()
+    image_b64 = str(payload.get('image_b64') or '').strip()
+    if image_b64:
+        if image_b64.startswith('data:') and ',' in image_b64:
+            header, image_b64 = image_b64.split(',', 1)
+            content_type = content_type or header[5:].split(';', 1)[0]
+        try:
+            data = base64.b64decode(image_b64, validate=True)
+        except Exception as exc:
+            raise ValueError(f'Image upload could not be read: {exc}') from exc
+    elif source_url:
+        session = requests.Session()
+        session.headers.update({'User-Agent': f'ArtworkManagerNAS/{WORKER_BUILD}', 'Accept': 'image/*,*/*;q=0.8'})
+        response = session.get(source_url, timeout=25)
+        if response.status_code != 200 or not response.content:
+            raise ValueError('Image URL could not be downloaded')
+        data = response.content
+        content_type = content_type or response.headers.get('Content-Type') or ''
+        filename = filename or Path(urlparse(source_url).path).name
+    else:
+        raise ValueError('Choose an image to import')
+    if len(data) > 25_000_000:
+        raise ValueError('Image is too large for import')
+    if not image_dimensions_from_bytes(data):
+        raise ValueError('That file is not readable artwork')
+    return data, filename, content_type, source_url
+
+
+def web_image_extension(data: bytes, content_type: str, fallback_name: str) -> str:
+    fmt = str((image_format_info(data) or {}).get('format') or '').upper()
+    ext = {'JPEG': '.jpg', 'PNG': '.png', 'WEBP': '.webp'}.get(fmt)
+    if ext:
+        return ext
+    return web_candidate_extension(content_type, fallback_name)
+
+
+def web_add_manual_candidate(payload: Dict[str, Any]) -> Dict[str, Any]:
+    album_key = str(payload.get('album_key') or '').strip()
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    data, filename, content_type, source_url = web_import_image_bytes(payload)
+    dims = image_dimensions_from_bytes(data)
+    if not dims:
+        raise ValueError('That file is not readable artwork')
+    width, height = int(dims[0] or 0), int(dims[1] or 0)
+    settings = web_get_settings()
+    target = web_effective_artwork_target(settings)
+    dest_dir = TEMP_CANDIDATE_DIR / album_key
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ext = web_image_extension(data, content_type, filename or source_url)
+    if ext not in IMAGE_EXTENSIONS:
+        ext = '.jpg'
+    label = filename or 'Imported image'
+    base = web_safe_filename(f"{album.get('artist')} - {clean_album_name(album.get('album') or '')} - Import")
+    dest = dest_dir / f'{base}{ext}'
+    counter = 1
+    while dest.exists():
+        dest = dest_dir / f'{base}_{counter}{ext}'
+        counter += 1
+    dest.write_bytes(data)
+    quality = web_quality_for_image(dest, width, height, target)
+    candidate_id = web_add_candidate(album_key, {
+        'source': 'Import',
+        'image_path': str(dest),
+        'width': width,
+        'height': height,
+        'source_url': source_url,
+        'source_detail': 'Manual image',
+        'release_title': label,
+        'release_mbid': '',
+        'source_meta': {
+            'filename': filename,
+            'source_page': source_url,
+            'imported_at': now(),
+        },
+        'warnings': quality['warnings'],
+        'score': quality['score'],
+        'score_summary': quality['score_summary'],
+        'state_reason': 'Imported and ready for review',
+    })
+    count = web_active_candidate_count(album_key)
+    web_set_album_status(album_key, 'candidate_found', f'{count} artwork option(s) ready.', {'last_manual_import_at': now()})
+    web_add_history(album_key, 'web_manual_import', {
+        'candidate_id': candidate_id,
+        'filename': filename,
+        'source_url': source_url,
+        'width': width,
+        'height': height,
+    })
+    candidates = [web_public_candidate(c) for c in web_list_candidates(album_key)]
+    return {
+        'ok': True,
+        'candidate_id': candidate_id,
+        'candidate_count': count,
+        'candidates': candidates,
+        'album': web_get_album(album_key),
+    }
+
+
 def web_cleanup_candidate_file(candidate: Dict[str, Any]) -> None:
     try:
         path = web_data_path(candidate.get('image_path'))
@@ -2018,6 +2122,102 @@ def web_approve_candidate(album_key: str, candidate_id: Any, job_id: str = '') -
         'deep_file_check': deep,
         'album': web_get_album(album_key),
     }
+
+
+def web_convert_current_artwork(album_key: str, job_id: str = '') -> Dict[str, Any]:
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    image_bytes, _mime = web_current_artwork(album_key)
+    settings = web_get_settings()
+    folder = safe_path(album.get('album_path') or '')
+    target = int(settings.get('preferred_artwork_size') or settings.get('scan_min_artwork_size') or 1000)
+    max_embed = int(settings.get('max_embedded_artwork_size') or target or 0)
+    update_job(job_id, label=f"Converting {album.get('artist')} — {album.get('album')}")
+    result = embed_album_job({
+        'album_folder': str(folder),
+        'album_key': album_key,
+        'image_b64': base64.b64encode(image_bytes).decode('ascii'),
+        'backup': bool(settings.get('backup_before_embed')),
+        'save_folder_cover': bool(settings.get('save_approved_artwork_to_album_folder')),
+        'embed': True,
+        'max_artwork_size': max_embed or None,
+        'make_square': True,
+    })
+    failed = result.get('failed') or []
+    total = int(result.get('total') or 0)
+    updated = int(result.get('updated') or 0)
+    if total <= 0:
+        raise ValueError('No supported audio files found in this album folder')
+    deep_result = deep_check(folder, target, problem_files=False, tolerance=target_tolerance(settings.get('target_size_match_mode')))
+    deep = deep_result.get('deep_file_check') or {}
+    ok = bool(updated and not failed and not deep.get('requires_action'))
+    status = 'already_good' if ok else 'incompatible_artwork'
+    if ok:
+        reason = f'Converted current artwork for {updated}/{total} tracks.'
+    elif failed:
+        reason = f'Converted {updated}/{total} tracks; {len(failed)} file(s) failed.'
+    else:
+        reason = deep_check_summary(deep) or 'Current artwork was converted, but a follow-up check still found an issue.'
+    notes_update = {
+        'status_reason': reason,
+        'deep_file_check': deep,
+        'last_convert_current': {
+            'updated': updated,
+            'total': total,
+            'converted_at': now(),
+            'target': target,
+            'image_width': result.get('image_width'),
+            'image_height': result.get('image_height'),
+        },
+    }
+    with db_connect() as conn:
+        row = conn.execute('SELECT notes FROM albums WHERE album_key=?', (album_key,)).fetchone()
+        notes = web_decode_notes(row['notes']) if row else {}
+        notes.update(notes_update)
+        conn.execute(
+            'UPDATE albums SET status=?, width=?, height=?, notes=?, last_scanned=? WHERE album_key=?',
+            (
+                status,
+                result.get('image_width') or album.get('width'),
+                result.get('image_height') or album.get('height'),
+                json.dumps(notes),
+                now(),
+                album_key,
+            ),
+        )
+    web_add_history(album_key, 'web_convert_current', {'result': result, 'deep_file_check': deep})
+    return {
+        'ok': ok,
+        'status': status,
+        'reason': reason,
+        'result': result,
+        'deep_file_check': deep,
+        'album': web_get_album(album_key),
+    }
+
+
+def start_web_convert_current(payload: Dict[str, Any]) -> Dict[str, Any]:
+    album_key = str(payload.get('album_key') or '').strip()
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    job_id, started_mono, _album_folder = begin_job('convert-current', {
+        'album_folder': album.get('album_path') or '',
+        'album_key': album_key,
+        'artist': album.get('artist') or '',
+        'album': album.get('album') or '',
+    })
+
+    def worker() -> None:
+        try:
+            result = web_convert_current_artwork(album_key, job_id=job_id)
+            finish_job(job_id, started_mono, True, result=result)
+        except Exception as exc:
+            finish_job(job_id, started_mono, False, error=str(exc))
+
+    threading.Thread(target=worker, name=f'ArtworkManagerConvertCurrent-{job_id}', daemon=True).start()
+    return {'ok': True, 'job_id': job_id, 'message': 'Convert current artwork started on the NAS.'}
 
 
 def start_web_approve(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -3118,8 +3318,16 @@ class Handler(BaseHTTPRequestHandler):
                 result = start_web_artwork_search(payload)
                 self._send(200, result)
                 return
+            if route == '/api/artwork/import':
+                result = web_add_manual_candidate(payload)
+                self._send(200, result)
+                return
             if route == '/api/artwork/approve':
                 result = start_web_approve(payload)
+                self._send(200, result)
+                return
+            if route == '/api/artwork/convert-current':
+                result = start_web_convert_current(payload)
                 self._send(200, result)
                 return
             if route == '/api/artwork/reject':

@@ -719,6 +719,10 @@ tbody tr.selected {
   font-weight: 700;
 }
 
+.file-input {
+  display: none;
+}
+
 .detail-pane.mode-empty .actions-panel p,
 .detail-pane.mode-done .actions-panel p {
   min-height: 0;
