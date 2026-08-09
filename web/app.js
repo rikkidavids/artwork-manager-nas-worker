@@ -26,6 +26,7 @@ const el = {
   refreshBtn: document.getElementById("refreshBtn"),
   settingsBtn: document.getElementById("settingsBtn"),
   scanBtn: document.getElementById("scanBtn"),
+  freshScanBtn: document.getElementById("freshScanBtn"),
   unlockPanel: document.getElementById("unlockPanel"),
   unlockSettingsBtn: document.getElementById("unlockSettingsBtn"),
   scanPanel: document.getElementById("scanPanel"),
@@ -430,8 +431,7 @@ function closeSettings() {
   el.settingsOverlay.classList.add("hidden");
 }
 
-async function saveSettings(event) {
-  event.preventDefault();
+function syncTokenFromSettings() {
   state.token = el.settingToken.value.trim();
   applyTheme(el.settingThemeMode.value);
   if (state.token) {
@@ -439,6 +439,20 @@ async function saveSettings(event) {
   } else {
     localStorage.removeItem("amwToken");
   }
+}
+
+async function postSettingsFromForm() {
+  const payload = await api("/api/settings", {
+    method: "POST",
+    body: JSON.stringify(readSettingsForm()),
+  });
+  populateSettings(payload);
+  return payload;
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  syncTokenFromSettings();
   if (!state.settingsLoaded) {
     try {
       await loadSettings();
@@ -451,11 +465,7 @@ async function saveSettings(event) {
     return;
   }
   try {
-    const payload = await api("/api/settings", {
-      method: "POST",
-      body: JSON.stringify(readSettingsForm()),
-    });
-    populateSettings(payload);
+    await postSettingsFromForm();
     await refreshStatus();
     await refreshQueue();
     el.settingsMessage.textContent = "Saved.";
@@ -478,6 +488,7 @@ function renderScan(status) {
   const job = activeScanJob(status);
   state.scanActive = Boolean(job);
   el.scanBtn.disabled = state.scanActive;
+  if (el.freshScanBtn) el.freshScanBtn.disabled = state.scanActive;
   if (!job) {
     el.scanPanel.classList.add("hidden");
     return;
@@ -819,18 +830,56 @@ function selectAlbum(albumKey, options = {}) {
   if (options.focusQueue) focusQueue();
 }
 
-async function startScan() {
+async function startScan(options = {}) {
+  const freshDatabase = Boolean(options.freshDatabase);
   el.scanBtn.disabled = true;
   try {
+    if (freshDatabase) {
+      state.albums = [];
+      state.selectedKey = "";
+      state.candidates = [];
+      state.queueSignature = "";
+      state.candidateIndex = 0;
+      setCounts({});
+      renderRows();
+      renderSelected();
+    }
     await api("/api/scan/start", {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify(freshDatabase ? { fresh_database: true, resume: false } : {}),
     });
     await refreshStatus();
+    await refreshQueue({ force: true });
     scheduleTick(500);
   } catch (error) {
     el.scanBtn.disabled = false;
+    if (freshDatabase) await refreshQueue({ force: true });
     el.workerSummary.textContent = error.message || "Scan could not start";
+  }
+}
+
+async function startFreshScanFromSettings() {
+  if (state.scanActive || state.actionActive) {
+    el.settingsMessage.textContent = "Wait for the current job to finish first.";
+    return;
+  }
+  const root = el.settingLibraryRoot.value.trim() || "/music";
+  const confirmed = window.confirm(`Clear the current queue database and scan ${root} from scratch? Settings and backups will be kept.`);
+  if (!confirmed) return;
+  syncTokenFromSettings();
+  el.freshScanBtn.disabled = true;
+  el.scanBtn.disabled = true;
+  el.settingsMessage.textContent = "Saving settings...";
+  try {
+    await postSettingsFromForm();
+    el.settingsMessage.textContent = "Clearing queue and starting a fresh scan...";
+    closeSettings();
+    await startScan({ freshDatabase: true });
+  } catch (error) {
+    el.settingsMessage.textContent = error.message || "Fresh scan could not start.";
+    el.scanBtn.disabled = false;
+  } finally {
+    if (!state.scanActive && el.freshScanBtn) el.freshScanBtn.disabled = false;
   }
 }
 
@@ -1000,6 +1049,7 @@ function bind() {
   });
   el.settingThemeMode.addEventListener("change", () => applyTheme(el.settingThemeMode.value));
   el.scanBtn.addEventListener("click", startScan);
+  if (el.freshScanBtn) el.freshScanBtn.addEventListener("click", startFreshScanFromSettings);
   el.findArtworkBtn.addEventListener("click", startArtworkSearch);
   el.approveEmbedBtn.addEventListener("click", approveSelectedCandidate);
   el.rejectCandidateBtn.addEventListener("click", rejectSelectedCandidate);

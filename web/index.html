@@ -217,6 +217,7 @@
                 <input id="settingBackupRoot" type="text" readonly>
               </label>
             </div>
+
           </section>
 
           <section class="settings-panel" data-settings-panel="scanning">
@@ -240,6 +241,12 @@
                   </select>
                 </label>
               </div>
+            </div>
+
+            <div class="setting-card">
+              <h3>Queue Database</h3>
+              <p class="setting-note">Use this after changing library roots, or when you want the queue rebuilt from scratch.</p>
+              <button id="freshScanBtn" class="ghost danger-text" type="button">Clear Queue + Scan</button>
             </div>
           </section>
 

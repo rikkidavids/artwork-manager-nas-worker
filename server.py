@@ -36,8 +36,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.23'
-APP_BUILD = '5.23'
+WORKER_BUILD = '5.24'
+APP_BUILD = '5.24'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -46,7 +46,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.23 tightens the review layout and keeps the Summary and Actions panels aligned inside the detail pane.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.24 adds a clear queue and fresh scan path for switching libraries cleanly.'
 )
 
 
@@ -253,7 +253,7 @@ def status_payload(public: bool = False) -> Dict[str, Any]:
             'GET /app/', 'GET /', 'GET /version', 'GET /health', 'GET /status',
             'GET /api/app/status', 'GET /api/settings', 'GET /api/albums',
             'GET /api/candidates', 'GET /api/artwork/current', 'GET /api/artwork/candidate',
-            'POST /api/settings', 'POST /api/scan/start', 'POST /api/artwork/search',
+            'POST /api/settings', 'POST /api/scan/start', 'POST /api/library/clear', 'POST /api/artwork/search',
             'POST /api/artwork/approve', 'POST /api/artwork/reject', 'POST /api/album/skip',
             'POST /api/album/mark-good', 'POST /scan-library', 'POST /embed', 'POST /deep-check',
             'POST /path-check',
@@ -1125,6 +1125,43 @@ def web_apply_scan_result(result: Dict[str, Any]) -> Dict[str, Any]:
             web_upsert_album(item)
             updated += 1
     return {'updated_rows': updated, 'counts': web_queue_counts()}
+
+
+def web_clear_queue_database() -> Dict[str, Any]:
+    with JOB_LOCK:
+        if ACTIVE_JOBS:
+            raise WorkerBusyError('Wait for the current job to finish before clearing the queue database.')
+    init_web_db()
+    with db_connect() as conn:
+        album_count = int((conn.execute('SELECT COUNT(*) AS n FROM albums').fetchone() or {'n': 0})['n'])
+        candidate_count = int((conn.execute('SELECT COUNT(*) AS n FROM candidates').fetchone() or {'n': 0})['n'])
+        history_count = int((conn.execute('SELECT COUNT(*) AS n FROM history').fetchone() or {'n': 0})['n'])
+        conn.execute('DELETE FROM candidates')
+        conn.execute('DELETE FROM history')
+        conn.execute('DELETE FROM albums')
+        conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('candidates', 'history')")
+
+    removed_candidate_files = 0
+    if TEMP_CANDIDATE_DIR.exists():
+        for child in list(TEMP_CANDIDATE_DIR.iterdir()):
+            try:
+                if child.is_dir():
+                    removed_candidate_files += sum(1 for item in child.rglob('*') if item.is_file())
+                    shutil.rmtree(child)
+                elif child.is_file():
+                    child.unlink()
+                    removed_candidate_files += 1
+            except Exception:
+                pass
+    TEMP_CANDIDATE_DIR.mkdir(parents=True, exist_ok=True)
+    return {
+        'cleared': True,
+        'albums_removed': album_count,
+        'candidates_removed': candidate_count,
+        'history_removed': history_count,
+        'candidate_files_removed': removed_candidate_files,
+        'counts': web_queue_counts(),
+    }
 
 
 def web_queue_counts(settings: Dict[str, Any] | None = None) -> Dict[str, int]:
@@ -2086,6 +2123,12 @@ def start_web_scan(payload: Dict[str, Any]) -> Dict[str, Any]:
     root = safe_path(scan_payload.get('library_root') or '')
     scan_payload['library_root'] = str(root)
     scan_payload['album_folder'] = str(root)
+    reset_result: Dict[str, Any] = {}
+    if web_bool(payload.get('fresh_database'), False):
+        reset_result = web_clear_queue_database()
+        scan_payload['resume'] = False
+        scan_payload['known_albums'] = []
+        scan_payload['fresh_database'] = True
     job_id, started_mono, _album = begin_job('scan-library', scan_payload)
 
     def worker() -> None:
@@ -2098,7 +2141,12 @@ def start_web_scan(payload: Dict[str, Any]) -> Dict[str, Any]:
             finish_job(job_id, started_mono, False, error=str(exc))
 
     threading.Thread(target=worker, name=f'ArtworkManagerWebScan-{job_id}', daemon=True).start()
-    return {'ok': True, 'job_id': job_id, 'message': 'Scan started on the NAS worker.'}
+    return {
+        'ok': True,
+        'job_id': job_id,
+        'database_reset': reset_result,
+        'message': 'Fresh scan started on the NAS worker.' if reset_result else 'Scan started on the NAS worker.',
+    }
 
 
 def web_status_payload() -> Dict[str, Any]:
@@ -3061,6 +3109,10 @@ class Handler(BaseHTTPRequestHandler):
             if route == '/api/scan/start':
                 result = start_web_scan(payload)
                 self._send(200, result)
+                return
+            if route == '/api/library/clear':
+                result = web_clear_queue_database()
+                self._send(200, {'ok': True, **result, 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
                 return
             if route == '/api/artwork/search':
                 result = start_web_artwork_search(payload)
