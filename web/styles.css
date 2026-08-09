@@ -255,7 +255,8 @@ input[readonly] {
 .detail-head p,
 .scan-copy span,
 dt,
-#coverMeta {
+#coverMeta,
+#candidateMeta {
   color: var(--muted);
 }
 
@@ -368,6 +369,10 @@ dt,
   min-height: 0;
   flex-direction: column;
   padding: 12px;
+}
+
+.detail-pane {
+  --cover-slot: clamp(300px, 31vw, 430px);
 }
 
 .queue-pane {
@@ -594,7 +599,7 @@ tbody tr.selected {
   min-height: 0;
   grid-template-columns: repeat(2, minmax(270px, 1fr));
   gap: 10px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .art-panel,
@@ -606,6 +611,7 @@ tbody tr.selected {
 
 .art-panel {
   display: flex;
+  min-height: calc(var(--cover-slot) + 82px);
   flex-direction: column;
   overflow: hidden;
 }
@@ -614,23 +620,13 @@ tbody tr.selected {
   align-self: start;
 }
 
-#candidatePanel.compact .cover-box {
-  display: none;
-}
-
-#candidatePanel.compact #candidateMeta {
-  min-height: 0;
-  margin-top: 14px;
-  color: var(--muted);
-  font-weight: 700;
-}
-
 .cover-box {
   position: relative;
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  width: min(100%, 430px);
+  width: min(100%, var(--cover-slot));
+  max-width: var(--cover-slot);
   aspect-ratio: 1 / 1;
   margin: 14px auto 10px;
   border: 1px dashed var(--line);
@@ -667,6 +663,18 @@ tbody tr.selected {
 .cover-box span {
   color: var(--muted);
   font-weight: 700;
+}
+
+#coverMeta,
+#candidateMeta {
+  display: -webkit-box;
+  flex: 0 0 38px;
+  min-height: 38px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
+  text-overflow: ellipsis;
 }
 
 .candidate-head {
@@ -785,7 +793,8 @@ tbody tr.selected {
 
 .artwork-viewer {
   display: grid;
-  width: min(920px, calc(100vw - 48px));
+  width: min(980px, calc(100vw - 48px));
+  height: min(860px, calc(100vh - 48px));
   max-height: calc(100vh - 48px);
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
@@ -818,6 +827,7 @@ tbody tr.selected {
 .artwork-viewer-frame {
   display: grid;
   min-height: 0;
+  overflow: hidden;
   place-items: center;
   padding: 14px;
   background: var(--cover-bg);
@@ -828,7 +838,8 @@ tbody tr.selected {
   width: auto;
   max-width: 100%;
   height: auto;
-  max-height: calc(100vh - 190px);
+  max-height: 100%;
+  object-fit: contain;
   border-radius: 8px;
   box-shadow: var(--cover-shadow);
 }
@@ -1004,16 +1015,16 @@ tbody tr.selected {
     padding: 10px;
   }
 
+  .detail-pane {
+    --cover-slot: clamp(260px, 32vw, 360px);
+  }
+
   .review-grid {
     grid-template-columns: repeat(2, minmax(210px, 1fr));
   }
 
   .review-bottom {
     grid-template-columns: 1fr;
-  }
-
-  .cover-box {
-    width: min(100%, 360px);
   }
 
   .settings-window {
@@ -1246,7 +1257,7 @@ tbody tr.selected {
   }
 
   #candidatePanel.compact {
-    min-height: 90px;
+    min-height: calc(var(--cover-slot) + 74px);
   }
 
   .actions-panel {
@@ -1314,6 +1325,6 @@ tbody tr.selected {
   }
 
   .artwork-viewer-frame img {
-    max-height: calc(100dvh - 156px);
+    max-height: 100%;
   }
 }

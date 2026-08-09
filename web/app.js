@@ -656,12 +656,14 @@ async function loadCover(album) {
   const box = el.currentCover.closest(".cover-box");
   box.classList.remove("has-cover");
   el.currentCover.removeAttribute("src");
-  el.coverPlaceholder.textContent = "No artwork";
   if (!album) {
+    el.coverPlaceholder.textContent = "No artwork";
     el.coverMeta.textContent = "No cover selected.";
     updateArtworkViewer();
     return;
   }
+  el.coverPlaceholder.textContent = "Loading cover...";
+  el.coverMeta.textContent = album.size_label || "Checking current cover...";
   try {
     const response = await fetch(`/api/artwork/current?album_key=${encodeURIComponent(album.album_key)}`, {
       headers: headers(),
@@ -690,11 +692,12 @@ async function loadCandidateCover(candidate) {
   const box = el.candidateCover.closest(".cover-box");
   box.classList.remove("has-cover");
   el.candidateCover.removeAttribute("src");
-  el.candidatePlaceholder.textContent = "No candidate";
   if (!candidate) {
+    el.candidatePlaceholder.textContent = "No candidate";
     updateArtworkViewer();
     return;
   }
+  el.candidatePlaceholder.textContent = "Loading cover...";
   try {
     const response = await fetch(`/api/artwork/candidate?candidate_id=${encodeURIComponent(candidate.candidate_id)}`, {
       headers: headers(),
