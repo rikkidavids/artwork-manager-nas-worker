@@ -36,8 +36,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.19'
-APP_BUILD = '5.19'
+WORKER_BUILD = '5.20'
+APP_BUILD = '5.20'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -46,7 +46,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.19 adds mobile-friendly review screens, artwork inspection, keyboard queue navigation, accent-insensitive sorting/search, and scan-rule-aware resume checks.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.20 makes queue status update immediately when artwork target settings change.'
 )
 
 
@@ -901,11 +901,58 @@ def web_album_key(album_path: Any) -> str:
     return digest[:20]
 
 
+REVIEW_STATUSES = ('candidate_found',)
+DONE_STATUSES = ('already_good', 'approved', 'reviewed_skipped', 'ignored')
+LIVE_SIZE_STATUSES = {'already_good', 'approved'}
+
+
+def web_effective_artwork_target(settings: Dict[str, Any] | None = None) -> int:
+    settings = settings or web_get_settings()
+    scan_min = web_int(settings.get('scan_min_artwork_size'), 1000, 200, 5000)
+    return web_int(settings.get('preferred_artwork_size') or scan_min, scan_min, 200, 5000)
+
+
+def web_live_status(status: Any, width: Any, height: Any, settings: Dict[str, Any]) -> str:
+    status = str(status or '').strip() or 'pending'
+    if status not in LIVE_SIZE_STATUSES:
+        return status
+    if width in (None, '', 'Missing') or height in (None, '', 'Missing'):
+        return 'missing_artwork'
+    try:
+        w = int(width or 0)
+        h = int(height or 0)
+    except Exception:
+        return 'missing_artwork'
+    if w <= 0 or h <= 0:
+        return 'missing_artwork'
+    if w != h:
+        return 'not_square_artwork'
+    target = web_effective_artwork_target(settings)
+    tolerance = target_tolerance(settings.get('target_size_match_mode'))
+    if not scan_artwork_meets_target_size(w, h, target, tolerance):
+        return 'needs_review'
+    return status
+
+
+def web_live_status_reason(status: str, raw_status: str, width: Any, height: Any, settings: Dict[str, Any], notes: Dict[str, Any]) -> str:
+    if status == raw_status:
+        return notes.get('status_reason') or ''
+    if status == 'missing_artwork':
+        return 'Current cover is missing.'
+    if status == 'not_square_artwork':
+        return 'Current cover is not square.'
+    if status == 'needs_review':
+        target = web_effective_artwork_target(settings)
+        size = f'{width} x {height}' if width and height else 'current cover'
+        return f'{size} is below target {target}.'
+    return notes.get('status_reason') or ''
+
+
 def web_status_bucket(status: Any) -> str:
     status = str(status or '').strip()
-    if status in {'candidate_found'}:
+    if status in REVIEW_STATUSES:
         return 'Review'
-    if status in {'already_good', 'approved', 'reviewed_skipped', 'ignored'}:
+    if status in DONE_STATUSES:
         return 'Done'
     if status in {'needs_review', 'missing_artwork', 'not_square_artwork', 'incompatible_artwork', 'no_candidate', 'pending', 'searching'}:
         return 'Needs Work'
@@ -1080,19 +1127,21 @@ def web_apply_scan_result(result: Dict[str, Any]) -> Dict[str, Any]:
     return {'updated_rows': updated, 'counts': web_queue_counts()}
 
 
-def web_queue_counts() -> Dict[str, int]:
+def web_queue_counts(settings: Dict[str, Any] | None = None) -> Dict[str, int]:
     counts = {'All': 0, 'Needs Work': 0, 'Review': 0, 'Done': 0}
+    settings = settings or web_get_settings()
     with db_connect() as conn:
-        rows = conn.execute('SELECT status, COUNT(*) AS n FROM albums GROUP BY status').fetchall()
+        rows = conn.execute('SELECT status, width, height FROM albums').fetchall()
     for row in rows:
-        n = int(row['n'] or 0)
-        counts['All'] += n
-        bucket = web_status_bucket(row['status'])
-        counts[bucket] = counts.get(bucket, 0) + n
+        live_status = web_live_status(row['status'], row['width'], row['height'], settings)
+        counts['All'] += 1
+        bucket = web_status_bucket(live_status)
+        counts[bucket] = counts.get(bucket, 0) + 1
     return counts
 
 
-def web_album_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+def web_album_from_row(row: sqlite3.Row, settings: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    settings = settings or web_get_settings()
     notes = web_decode_notes(row['notes'])
     width = row['width']
     height = row['height']
@@ -1100,16 +1149,18 @@ def web_album_from_row(row: sqlite3.Row) -> Dict[str, Any]:
         size = f'{width} x {height}'
     else:
         size = 'Missing'
-    status = row['status'] or 'pending'
+    raw_status = row['status'] or 'pending'
+    status = web_live_status(raw_status, width, height, settings)
     return {
         'album_key': row['album_key'],
         'artist': row['artist'] or 'Unknown Artist',
         'album': row['album'] or 'Unknown Album',
         'album_path': row['album_path'] or '',
+        'stored_status': raw_status,
         'status': status,
         'status_label': web_status_label(status),
         'bucket': web_status_bucket(status),
-        'status_reason': notes.get('status_reason') or '',
+        'status_reason': web_live_status_reason(status, raw_status, width, height, settings, notes),
         'width': width,
         'height': height,
         'size_label': size,
@@ -1132,29 +1183,15 @@ def web_query_albums(params: Dict[str, List[str]]) -> Dict[str, Any]:
         limit = max(0, min(int(raw_limit), 50000))
     except Exception:
         limit = 0
-    review_statuses = ('candidate_found',)
-    done_statuses = ('already_good', 'approved', 'reviewed_skipped', 'ignored')
+    settings = web_get_settings()
     where = []
     args: List[Any] = []
-    if bucket == 'Review':
-        where.append(f"a.status IN ({','.join('?' for _ in review_statuses)})")
-        args.extend(review_statuses)
-    elif bucket == 'Done':
-        where.append(f"a.status IN ({','.join('?' for _ in done_statuses)})")
-        args.extend(done_statuses)
-    elif bucket == 'Needs Work':
-        handled = review_statuses + done_statuses
-        where.append(f"(a.status IS NULL OR a.status='' OR a.status NOT IN ({','.join('?' for _ in handled)}))")
-        args.extend(handled)
     if query:
         where.append(
             "amw_fold(COALESCE(a.artist,'') || ' ' || COALESCE(a.album,'') || ' ' || COALESCE(a.album_path,'')) LIKE ?"
         )
         args.append(f'%{query}%')
     where_sql = f"WHERE {' AND '.join(where)}" if where else ''
-    limit_sql = 'LIMIT ?' if limit else ''
-    if limit:
-        args.append(limit)
     with db_connect() as conn:
         rows = conn.execute(
             f'''
@@ -1163,15 +1200,19 @@ def web_query_albums(params: Dict[str, List[str]]) -> Dict[str, Any]:
             {where_sql}
             GROUP BY a.album_key
             ORDER BY amw_fold(a.artist), amw_fold(a.album), amw_fold(a.album_path)
-            {limit_sql}
             ''',
             args,
         ).fetchall()
-    items = [web_album_from_row(row) for row in rows]
-    return {'ok': True, 'albums': items, 'counts': web_queue_counts(), 'shown': len(items)}
+    items = [web_album_from_row(row, settings) for row in rows]
+    if bucket in {'Needs Work', 'Review', 'Done'}:
+        items = [item for item in items if item.get('bucket') == bucket]
+    if limit:
+        items = items[:limit]
+    return {'ok': True, 'albums': items, 'counts': web_queue_counts(settings), 'shown': len(items)}
 
 
 def web_get_album(album_key: str) -> Dict[str, Any] | None:
+    settings = web_get_settings()
     with db_connect() as conn:
         row = conn.execute(
             '''
@@ -1182,7 +1223,7 @@ def web_get_album(album_key: str) -> Dict[str, Any] | None:
             ''',
             (album_key,),
         ).fetchone()
-    return web_album_from_row(row) if row else None
+    return web_album_from_row(row, settings) if row else None
 
 
 def web_row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
