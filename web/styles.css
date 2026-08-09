@@ -828,20 +828,19 @@ tbody tr.selected {
   display: grid;
   min-height: 0;
   overflow: hidden;
-  place-items: center;
   padding: 14px;
   background: var(--cover-bg);
 }
 
 .artwork-viewer-frame img {
   display: block;
-  width: auto;
-  max-width: 100%;
-  height: auto;
-  max-height: 100%;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
   object-fit: contain;
+  object-position: center;
   border-radius: 8px;
-  box-shadow: var(--cover-shadow);
 }
 
 .artwork-viewer-nav {
@@ -1325,6 +1324,6 @@ tbody tr.selected {
   }
 
   .artwork-viewer-frame img {
-    max-height: 100%;
+    max-height: none;
   }
 }
