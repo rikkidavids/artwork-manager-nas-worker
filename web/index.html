@@ -4,6 +4,13 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Artwork Manager NAS</title>
+    <script>
+      (() => {
+        const mode = localStorage.getItem("amwThemeMode") || "Auto";
+        const dark = mode === "Dark" || (mode === "Auto" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      })();
+    </script>
     <link rel="stylesheet" href="/app/styles.css">
   </head>
   <body>
@@ -114,24 +121,12 @@
             <section class="notes-panel">
               <h3>Summary</h3>
               <p id="summaryLead" class="summary-lead">Select an album to review.</p>
-              <dl class="summary-list">
-                <div>
-                  <dt>Status</dt>
-                  <dd id="detailStatus">-</dd>
-                </div>
-                <div>
-                  <dt id="detailReasonLabel">Note</dt>
-                  <dd id="detailReason">-</dd>
-                </div>
-                <div>
-                  <dt>Tracks</dt>
-                  <dd id="detailTracks">-</dd>
-                </div>
-                <div>
-                  <dt>Checked</dt>
-                  <dd id="detailChecked">-</dd>
-                </div>
-              </dl>
+              <div class="summary-meta">
+                <span id="detailStatus">-</span>
+                <span id="detailReason">-</span>
+                <span id="detailTracks">-</span>
+                <span id="detailChecked">-</span>
+              </div>
             </section>
 
             <section class="actions-panel">
@@ -191,6 +186,14 @@
                 <input id="settingLibraryRoot" name="library_root" type="text" placeholder="/music">
               </label>
               <div class="setting-grid">
+                <label class="setting-field">
+                  <span>Theme</span>
+                  <select id="settingThemeMode" name="theme_mode">
+                    <option value="Auto">Auto</option>
+                    <option value="Light">Light</option>
+                    <option value="Dark">Dark</option>
+                  </select>
+                </label>
                 <label class="setting-field">
                   <span>Worker build</span>
                   <input id="settingBuild" type="text" readonly>

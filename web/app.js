@@ -13,6 +13,9 @@ const state = {
   settings: {},
   settingsLoaded: false,
   appInfo: {},
+  queueSignature: "",
+  tickTimer: 0,
+  searchTimer: 0,
 };
 
 const el = {
@@ -43,7 +46,6 @@ const el = {
   candidatePosition: document.getElementById("candidatePosition"),
   summaryLead: document.getElementById("summaryLead"),
   detailStatus: document.getElementById("detailStatus"),
-  detailReasonLabel: document.getElementById("detailReasonLabel"),
   detailReason: document.getElementById("detailReason"),
   detailTracks: document.getElementById("detailTracks"),
   detailChecked: document.getElementById("detailChecked"),
@@ -67,6 +69,7 @@ const el = {
   settingsMessage: document.getElementById("settingsMessage"),
   closeSettingsBtn: document.getElementById("closeSettingsBtn"),
   settingLibraryRoot: document.getElementById("settingLibraryRoot"),
+  settingThemeMode: document.getElementById("settingThemeMode"),
   settingBuild: document.getElementById("settingBuild"),
   settingApi: document.getElementById("settingApi"),
   settingDataRoot: document.getElementById("settingDataRoot"),
@@ -135,6 +138,20 @@ function formatDateTime(value) {
   }).format(date);
 }
 
+function themeMode(value) {
+  const text = String(value || "Auto").trim().toLowerCase();
+  return { auto: "Auto", light: "Light", dark: "Dark" }[text] || "Auto";
+}
+
+function applyTheme(mode) {
+  const normal = themeMode(mode);
+  const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const resolved = normal === "Dark" || (normal === "Auto" && prefersDark) ? "dark" : "light";
+  document.documentElement.dataset.theme = resolved;
+  localStorage.setItem("amwThemeMode", normal);
+  if (el.settingThemeMode) el.settingThemeMode.value = normal;
+}
+
 function isDoneAlbum(album) {
   return album && (album.bucket === "Done" || (album.status_label || "").toLowerCase() === "good");
 }
@@ -157,13 +174,39 @@ function checkedLabel(album) {
   return checked === "-" ? "not checked yet" : `checked ${checked}`;
 }
 
+function targetSize() {
+  return Number(state.settings.preferred_artwork_size || state.settings.scan_min_artwork_size || 1200);
+}
+
 function summaryLead(album) {
   if (!album) return "Select an album to review.";
-  if (isDoneAlbum(album)) return `Looks good - ${trackLabel(album)} - ${checkedLabel(album)}`;
-  if (album.bucket === "Review") return `Ready to review - ${trackLabel(album)} - ${checkedLabel(album)}`;
-  if (album.status === "missing_artwork") return `Missing artwork - ${trackLabel(album)} - ${checkedLabel(album)}`;
-  if (album.status === "incompatible_artwork") return `Needs a better cover - ${trackLabel(album)} - ${checkedLabel(album)}`;
-  return `Needs work - ${trackLabel(album)} - ${checkedLabel(album)}`;
+  const target = targetSize();
+  if (isDoneAlbum(album)) return `Good - target ${target}`;
+  if (album.bucket === "Review") return `Review - target ${target}`;
+  if (album.status === "missing_artwork") return `Missing - target ${target}`;
+  if (album.status === "incompatible_artwork") return `Convert - target ${target}`;
+  return `Needs work - target ${target}`;
+}
+
+function nextLabel(album) {
+  if (!album) return "-";
+  if (isDoneAlbum(album)) return "Nothing needed.";
+  if (album.bucket === "Review") return "Approve or reject.";
+  if (album.status === "missing_artwork") return "Find a cover.";
+  if (album.status === "incompatible_artwork") return "Convert or replace.";
+  if (album.status === "no_candidate") return "Try another search.";
+  return "Find artwork.";
+}
+
+function compactChecked(album) {
+  const checked = formatDateTime(album?.last_scanned);
+  return checked === "-" ? "Not checked" : checked;
+}
+
+function queueSignature(albums) {
+  return albums
+    .map((album) => `${album.album_key}:${album.status}:${album.width || ""}x${album.height || ""}:${album.candidate_count || 0}`)
+    .join("|");
 }
 
 function statusClass(album) {
@@ -254,7 +297,9 @@ function populateSettings(payload = {}) {
   };
   state.settings = settings;
   state.appInfo = { ...state.appInfo, ...info };
+  applyTheme(settings.theme_mode || localStorage.getItem("amwThemeMode") || "Auto");
   el.settingLibraryRoot.value = settings.library_root || "/music";
+  el.settingThemeMode.value = themeMode(settings.theme_mode || localStorage.getItem("amwThemeMode") || "Auto");
   el.settingBuild.value = info.worker_build || "-";
   el.settingApi.value = info.api || "-";
   el.settingDataRoot.value = info.data_root || "-";
@@ -280,6 +325,7 @@ function populateSettings(payload = {}) {
 function readSettingsForm() {
   return {
     library_root: el.settingLibraryRoot.value.trim() || "/music",
+    theme_mode: themeMode(el.settingThemeMode.value),
     resume_scans: el.settingResumeScans.checked,
     include_missing: el.settingIncludeMissing.checked,
     deep_scan_all_files: el.settingDeepScan.checked,
@@ -331,6 +377,7 @@ function closeSettings() {
 async function saveSettings(event) {
   event.preventDefault();
   state.token = el.settingToken.value.trim();
+  applyTheme(el.settingThemeMode.value);
   if (state.token) {
     localStorage.setItem("amwToken", state.token);
   } else {
@@ -498,14 +545,15 @@ function renderRows() {
       if (index === 0) cell.className = `status-cell ${statusClass(album)}`;
       row.appendChild(cell);
     });
-    row.addEventListener("click", () => selectAlbum(album.album_key));
     fragment.appendChild(row);
   });
   el.albumRows.appendChild(fragment);
 }
 
-async function refreshQueue() {
-  const params = new URLSearchParams({ bucket: state.bucket, q: state.query, limit: "500" });
+async function refreshQueue(options = {}) {
+  const force = Boolean(options.force);
+  const previousSelected = state.selectedKey;
+  const params = new URLSearchParams({ bucket: state.bucket, q: state.query });
   try {
     const payload = await api(`/api/albums?${params}`);
     const counts = payload.counts || {};
@@ -513,22 +561,30 @@ async function refreshQueue() {
     if (!state.query && !albums.length && state.bucket === "Review" && Number(counts["Needs Work"] || 0) > 0) {
       state.bucket = "Needs Work";
       localStorage.setItem("amwBucket", state.bucket);
-      return refreshQueue();
+      return refreshQueue({ force: true });
     }
     if (!state.query && !albums.length && state.bucket === "Needs Work" && Number(counts["Review"] || 0) > 0) {
       state.bucket = "Review";
       localStorage.setItem("amwBucket", state.bucket);
-      return refreshQueue();
+      return refreshQueue({ force: true });
     }
+    const signature = queueSignature(albums);
+    const queueChanged = force || signature !== state.queueSignature || albums.length !== state.albums.length;
     state.albums = albums;
+    state.queueSignature = signature;
     setCounts(counts);
     if (!state.albums.find((album) => album.album_key === state.selectedKey)) {
       state.selectedKey = state.albums[0]?.album_key || "";
     }
-    renderRows();
-    renderSelected();
+    if (queueChanged) renderRows();
+    if (queueChanged || previousSelected !== state.selectedKey || force) {
+      renderSelected();
+    } else {
+      updateActionButtons();
+    }
   } catch (error) {
     state.albums = [];
+    state.queueSignature = "";
     renderRows();
   }
 }
@@ -656,7 +712,6 @@ function renderSelected() {
     el.summaryLead.textContent = summaryLead(null);
     el.summaryLead.className = "summary-lead";
     el.detailStatus.textContent = "-";
-    el.detailReasonLabel.textContent = "Note";
     el.detailReason.textContent = "-";
     el.detailTracks.textContent = "-";
     el.detailChecked.textContent = "-";
@@ -672,11 +727,10 @@ function renderSelected() {
   el.albumStatus.className = `status-pill ${statusClass(album)}`;
   el.summaryLead.textContent = summaryLead(album);
   el.summaryLead.className = `summary-lead ${statusClass(album)}`;
-  el.detailStatus.textContent = album.status_label || "-";
-  el.detailReasonLabel.textContent = isDoneAlbum(album) ? "Next" : "Issue";
-  el.detailReason.textContent = isDoneAlbum(album) ? "No action needed." : album.status_reason || "Needs attention.";
+  el.detailStatus.textContent = album.size_label ? `Current ${album.size_label}` : "Current missing";
+  el.detailReason.textContent = nextLabel(album);
   el.detailTracks.textContent = trackLabel(album);
-  el.detailChecked.textContent = formatDateTime(album.last_scanned);
+  el.detailChecked.textContent = compactChecked(album);
   if (!state.actionActive) {
     el.actionMessage.textContent = idleActionMessage(album);
   }
@@ -690,7 +744,6 @@ function renderSelected() {
 
 function selectAlbum(albumKey) {
   state.selectedKey = albumKey || "";
-  renderRows();
   renderSelected();
 }
 
@@ -702,6 +755,7 @@ async function startScan() {
       body: JSON.stringify({}),
     });
     await refreshStatus();
+    scheduleTick(500);
   } catch (error) {
     el.scanBtn.disabled = false;
     el.workerSummary.textContent = error.message || "Scan could not start";
@@ -720,6 +774,7 @@ async function startArtworkSearch() {
       body: JSON.stringify({ album_key: album.album_key }),
     });
     await refreshStatus();
+    scheduleTick(500);
   } catch (error) {
     state.actionActive = false;
     el.actionMessage.textContent = error.message || "Artwork search could not start.";
@@ -740,6 +795,7 @@ async function approveSelectedCandidate() {
       body: JSON.stringify({ album_key: album.album_key, candidate_id: candidate.candidate_id }),
     });
     await refreshStatus();
+    scheduleTick(500);
   } catch (error) {
     state.actionActive = false;
     el.actionMessage.textContent = error.message || "Approve and embed could not start.";
@@ -798,7 +854,8 @@ function openGoogleImages() {
 function bind() {
   el.refreshBtn.addEventListener("click", async () => {
     await refreshStatus();
-    await refreshQueue();
+    await refreshQueue({ force: true });
+    scheduleTick(10000);
   });
   el.settingsBtn.addEventListener("click", () => openSettings("general"));
   el.unlockSettingsBtn.addEventListener("click", () => openSettings("security"));
@@ -810,6 +867,7 @@ function bind() {
   document.querySelectorAll(".settings-tab").forEach((button) => {
     button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab || "general"));
   });
+  el.settingThemeMode.addEventListener("change", () => applyTheme(el.settingThemeMode.value));
   el.scanBtn.addEventListener("click", startScan);
   el.findArtworkBtn.addEventListener("click", startArtworkSearch);
   el.approveEmbedBtn.addEventListener("click", approveSelectedCandidate);
@@ -820,30 +878,62 @@ function bind() {
   el.googleImagesBtn.addEventListener("click", openGoogleImages);
   el.markGoodBtn.addEventListener("click", () => runAlbumAction("/api/album/mark-good", "Marked as good."));
   el.skipAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/skip", "Skipped for now."));
+  el.albumRows.addEventListener("click", (event) => {
+    const row = event.target.closest("tr[data-album-key]");
+    if (row) selectAlbum(row.dataset.albumKey);
+  });
   el.searchInput.addEventListener("input", () => {
     state.query = el.searchInput.value.trim();
-    refreshQueue();
+    window.clearTimeout(state.searchTimer);
+    state.searchTimer = window.setTimeout(() => refreshQueue({ force: true }), 180);
   });
   document.querySelectorAll(".chip").forEach((chip) => {
     chip.addEventListener("click", () => {
       state.bucket = chip.dataset.bucket || "All";
       localStorage.setItem("amwBucket", state.bucket);
-      refreshQueue();
+      refreshQueue({ force: true });
     });
   });
-}
-
-async function tick() {
-  const hadAction = state.actionActive;
-  const status = await refreshStatus();
-  if (status && (state.scanActive || state.actionActive || hadAction)) {
-    await refreshQueue();
-    if (state.selectedKey) {
-      await refreshCandidates(selectedAlbum());
+  document.addEventListener("visibilitychange", () => scheduleTick(document.hidden ? 30000 : 500));
+  if (window.matchMedia) {
+    const schemeWatcher = window.matchMedia("(prefers-color-scheme: dark)");
+    const syncAutoTheme = () => {
+      if (themeMode(localStorage.getItem("amwThemeMode")) === "Auto") applyTheme("Auto");
+    };
+    if (schemeWatcher.addEventListener) {
+      schemeWatcher.addEventListener("change", syncAutoTheme);
+    } else if (schemeWatcher.addListener) {
+      schemeWatcher.addListener(syncAutoTheme);
     }
   }
 }
 
+function nextPollDelay() {
+  if (document.hidden) return 30000;
+  if (state.scanActive || state.actionActive) return 1800;
+  return 10000;
+}
+
+function scheduleTick(delay = nextPollDelay()) {
+  window.clearTimeout(state.tickTimer);
+  state.tickTimer = window.setTimeout(tick, delay);
+}
+
+async function tick() {
+  const hadAction = state.actionActive;
+  try {
+    const status = await refreshStatus();
+    if (status && (state.scanActive || state.actionActive || hadAction)) {
+      await refreshQueue();
+      if (state.selectedKey) {
+        await refreshCandidates(selectedAlbum());
+      }
+    }
+  } finally {
+    scheduleTick();
+  }
+}
+
+applyTheme(localStorage.getItem("amwThemeMode") || "Auto");
 bind();
-refreshStatus().then(refreshQueue);
-setInterval(tick, 1800);
+refreshStatus().then(() => refreshQueue({ force: true })).finally(() => scheduleTick());

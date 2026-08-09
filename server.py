@@ -36,8 +36,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.17'
-APP_BUILD = '5.17'
+WORKER_BUILD = '5.18'
+APP_BUILD = '5.18'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -46,7 +46,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.17 polishes the NAS web workbench layout and workflow states.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.18 adds full queue loading, theme modes, and lighter web polling.'
 )
 
 
@@ -774,6 +774,7 @@ def web_default_settings() -> Dict[str, Any]:
         'parallel_provider_workers': web_int(os.environ.get('AMW_PROVIDER_WORKERS') or 2, 2, 1, 4),
         'deezer_enabled': web_bool(os.environ.get('AMW_DEEZER_ENABLED'), True),
         'itunes_enabled': web_bool(os.environ.get('AMW_ITUNES_ENABLED'), True),
+        'theme_mode': os.environ.get('AMW_THEME_MODE') or 'Auto',
     }
 
 
@@ -805,6 +806,8 @@ def web_get_settings() -> Dict[str, Any]:
     settings['parallel_provider_workers'] = web_int(settings.get('parallel_provider_workers'), 2, 1, 4)
     settings['deezer_enabled'] = web_bool(settings.get('deezer_enabled'), True)
     settings['itunes_enabled'] = web_bool(settings.get('itunes_enabled'), True)
+    theme = str(settings.get('theme_mode') or 'Auto').strip().lower()
+    settings['theme_mode'] = {'light': 'Light', 'dark': 'Dark', 'auto': 'Auto'}.get(theme, 'Auto')
     return settings
 
 
@@ -826,6 +829,7 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
         'parallel_provider_workers',
         'deezer_enabled',
         'itunes_enabled',
+        'theme_mode',
     }
     for key in allowed:
         if key in payload:
@@ -846,6 +850,8 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
     current['parallel_provider_workers'] = web_int(current.get('parallel_provider_workers'), 2, 1, 4)
     current['deezer_enabled'] = web_bool(current.get('deezer_enabled'), True)
     current['itunes_enabled'] = web_bool(current.get('itunes_enabled'), True)
+    theme = str(current.get('theme_mode') or 'Auto').strip().lower()
+    current['theme_mode'] = {'light': 'Light', 'dark': 'Dark', 'auto': 'Auto'}.get(theme, 'Auto')
     with db_connect() as conn:
         conn.execute(
             'INSERT INTO app_settings(id, payload, updated_at) VALUES(1, ?, ?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at',
@@ -1086,31 +1092,47 @@ def web_album_from_row(row: sqlite3.Row) -> Dict[str, Any]:
 def web_query_albums(params: Dict[str, List[str]]) -> Dict[str, Any]:
     bucket = (params.get('bucket') or ['All'])[0]
     query = ((params.get('q') or [''])[0] or '').strip().lower()
+    raw_limit = ((params.get('limit') or ['0'])[0] or '0').strip()
     try:
-        limit = max(1, min(int((params.get('limit') or ['250'])[0] or 250), 1000))
+        limit = max(0, min(int(raw_limit), 50000))
     except Exception:
-        limit = 250
+        limit = 0
+    review_statuses = ('candidate_found',)
+    done_statuses = ('already_good', 'approved', 'reviewed_skipped', 'ignored')
+    where = []
+    args: List[Any] = []
+    if bucket == 'Review':
+        where.append(f"a.status IN ({','.join('?' for _ in review_statuses)})")
+        args.extend(review_statuses)
+    elif bucket == 'Done':
+        where.append(f"a.status IN ({','.join('?' for _ in done_statuses)})")
+        args.extend(done_statuses)
+    elif bucket == 'Needs Work':
+        handled = review_statuses + done_statuses
+        where.append(f"(a.status IS NULL OR a.status='' OR a.status NOT IN ({','.join('?' for _ in handled)}))")
+        args.extend(handled)
+    if query:
+        where.append(
+            "lower(COALESCE(a.artist,'') || ' ' || COALESCE(a.album,'') || ' ' || COALESCE(a.album_path,'')) LIKE ?"
+        )
+        args.append(f'%{query}%')
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ''
+    limit_sql = 'LIMIT ?' if limit else ''
+    if limit:
+        args.append(limit)
     with db_connect() as conn:
         rows = conn.execute(
-            '''
+            f'''
             SELECT a.*, COUNT(CASE WHEN c.approved=0 AND c.rejected=0 THEN 1 END) AS candidate_count
             FROM albums a LEFT JOIN candidates c ON c.album_key=a.album_key
+            {where_sql}
             GROUP BY a.album_key
             ORDER BY lower(a.artist), lower(a.album), lower(a.album_path)
-            '''
+            {limit_sql}
+            ''',
+            args,
         ).fetchall()
-    items = []
-    for row in rows:
-        item = web_album_from_row(row)
-        if bucket and bucket != 'All' and item['bucket'] != bucket:
-            continue
-        if query:
-            haystack = f"{item['artist']} {item['album']} {item['album_path']}".lower()
-            if query not in haystack:
-                continue
-        items.append(item)
-        if len(items) >= limit:
-            break
+    items = [web_album_from_row(row) for row in rows]
     return {'ok': True, 'albums': items, 'counts': web_queue_counts(), 'shown': len(items)}
 
 
