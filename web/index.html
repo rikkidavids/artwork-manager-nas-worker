@@ -57,7 +57,10 @@
             <span id="shownCount">0 shown</span>
           </div>
           <div class="queue-controls">
-            <input id="searchInput" class="search" type="search" placeholder="Search artist, album, folder...">
+            <div class="search-row">
+              <input id="searchInput" class="search" type="search" placeholder="Search artist, album, folder...">
+              <button id="clearSearchBtn" class="ghost clear-search hidden" type="button">Clear</button>
+            </div>
             <div class="chips" role="tablist" aria-label="Queue filters">
               <button class="chip active" type="button" data-bucket="All">All</button>
               <button class="chip" type="button" data-bucket="Needs Work">Needs Work</button>
@@ -332,8 +335,8 @@
           <img id="artworkViewerImage" alt="">
         </div>
         <footer id="artworkViewerNav" class="artwork-viewer-nav">
-          <button id="viewerPrevBtn" class="ghost" type="button">Previous</button>
-          <button id="viewerNextBtn" class="ghost" type="button">Next</button>
+          <button id="viewerPrevBtn" class="ghost" type="button" aria-label="Previous replacement cover">Previous</button>
+          <button id="viewerNextBtn" class="ghost" type="button" aria-label="Next replacement cover">Next</button>
         </footer>
       </section>
     </div>

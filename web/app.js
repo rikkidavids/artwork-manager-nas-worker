@@ -20,6 +20,8 @@ const state = {
   viewerOpen: false,
   viewerKind: "",
   problemKey: "",
+  settingsReturnFocus: null,
+  viewerReturnFocus: null,
 };
 
 const el = {
@@ -35,6 +37,7 @@ const el = {
   scanText: document.getElementById("scanText"),
   shownCount: document.getElementById("shownCount"),
   searchInput: document.getElementById("searchInput"),
+  clearSearchBtn: document.getElementById("clearSearchBtn"),
   queueTableWrap: document.getElementById("queueTableWrap"),
   albumRows: document.getElementById("albumRows"),
   detailPane: document.getElementById("detailPane"),
@@ -189,6 +192,26 @@ function applyTheme(mode) {
   document.documentElement.dataset.theme = resolved;
   localStorage.setItem("amwThemeMode", normal);
   if (el.settingThemeMode) el.settingThemeMode.value = normal;
+}
+
+function syncModalIsolation() {
+  const shell = document.querySelector(".shell");
+  if (!shell) return;
+  const modalOpen = state.viewerOpen || !el.settingsOverlay.classList.contains("hidden");
+  if (modalOpen) {
+    shell.setAttribute("aria-hidden", "true");
+    shell.setAttribute("inert", "");
+  } else {
+    shell.removeAttribute("aria-hidden");
+    shell.removeAttribute("inert");
+  }
+  if ("inert" in shell) shell.inert = modalOpen;
+}
+
+function updateSearchControls() {
+  if (!el.clearSearchBtn) return;
+  el.clearSearchBtn.classList.toggle("hidden", !state.query);
+  el.searchInput.classList.toggle("has-query", Boolean(state.query));
 }
 
 function isDoneAlbum(album) {
@@ -461,7 +484,9 @@ async function loadSettings() {
 }
 
 async function openSettings(tab = "general") {
+  state.settingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   el.settingsOverlay.classList.remove("hidden");
+  syncModalIsolation();
   populateSettings({
     settings: state.settings,
     worker_build: state.appInfo.worker_build,
@@ -477,10 +502,16 @@ async function openSettings(tab = "general") {
     el.settingsMessage.textContent = error.message === "Token required" ? "Enter the token in Security, then save." : "Settings could not be loaded.";
     setSettingsTab("security");
   }
+  el.closeSettingsBtn.focus({ preventScroll: true });
 }
 
 function closeSettings() {
   el.settingsOverlay.classList.add("hidden");
+  syncModalIsolation();
+  if (state.settingsReturnFocus?.isConnected) {
+    state.settingsReturnFocus.focus({ preventScroll: true });
+  }
+  state.settingsReturnFocus = null;
 }
 
 function syncTokenFromSettings() {
@@ -586,7 +617,7 @@ function updateActionButtons() {
 
   setVisible(el.primaryActionRow, hasAlbum);
   setVisible(el.findArtworkBtn, hasAlbum);
-  setVisible(el.approveEmbedBtn, mode !== "done" || hasCandidate);
+  setVisible(el.approveEmbedBtn, hasCandidate);
   setVisible(el.convertCurrentBtn, canConvertCurrent);
   setVisible(el.candidateActionRow, showCandidateActions);
   setVisible(el.prevCandidateBtn, state.candidates.length > 1);
@@ -656,9 +687,18 @@ async function refreshStatus() {
 }
 
 function renderRows() {
+  updateSearchControls();
   el.shownCount.textContent = `${fmt(state.albums.length)} shown`;
   if (!state.albums.length) {
-    el.albumRows.innerHTML = '<tr><td colspan="5" class="empty">No albums in this view.</td></tr>';
+    const emptyText = state.query ? `No albums match "${state.query}".` : "No albums in this view.";
+    el.albumRows.innerHTML = "";
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.className = "empty";
+    cell.textContent = emptyText;
+    row.appendChild(cell);
+    el.albumRows.appendChild(row);
     return;
   }
   el.albumRows.innerHTML = "";
@@ -865,12 +905,14 @@ function renderProblemFiles(problemFiles, check) {
     const item = document.createElement("li");
     const name = document.createElement("div");
     const issue = document.createElement("div");
+    const issueText = `${issues || "Needs attention"}${dims}`;
     name.className = "problem-file-name";
     issue.className = "problem-file-issue";
     name.textContent = shortProblemPath(problem.file || problem.path || problem.name || "");
     name.title = problem.file || problem.path || problem.name || "";
-    issue.textContent = `${issues || "Needs attention"}${dims}`;
-    item.append(name, issue);
+    issue.textContent = issueText;
+    item.setAttribute("aria-label", `${name.textContent}: ${issueText}`);
+    item.append(name, document.createTextNode(" "), issue);
     fragment.appendChild(item);
   });
   el.problemFileList.appendChild(fragment);
@@ -1192,10 +1234,14 @@ function updateArtworkViewer() {
 
 function openArtworkViewer(kind) {
   if (!hasCover(kind)) return;
+  state.viewerReturnFocus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+    ? document.activeElement
+    : document.querySelector(`.cover-box[data-artwork-kind="${kind}"]`);
   state.viewerOpen = true;
   state.viewerKind = kind;
   el.artworkOverlay.classList.remove("hidden");
   document.body.classList.add("viewer-open");
+  syncModalIsolation();
   updateArtworkViewer();
   el.closeArtworkViewerBtn.focus({ preventScroll: true });
 }
@@ -1206,6 +1252,11 @@ function closeArtworkViewer() {
   el.artworkOverlay.classList.add("hidden");
   document.body.classList.remove("viewer-open");
   el.artworkViewerImage.removeAttribute("src");
+  syncModalIsolation();
+  if (state.viewerReturnFocus?.isConnected) {
+    state.viewerReturnFocus.focus({ preventScroll: true });
+  }
+  state.viewerReturnFocus = null;
 }
 
 function bind() {
@@ -1267,8 +1318,17 @@ function bind() {
   });
   el.searchInput.addEventListener("input", () => {
     state.query = el.searchInput.value.trim();
+    updateSearchControls();
     window.clearTimeout(state.searchTimer);
     state.searchTimer = window.setTimeout(() => refreshQueue({ force: true }), 180);
+  });
+  el.clearSearchBtn.addEventListener("click", () => {
+    state.query = "";
+    el.searchInput.value = "";
+    updateSearchControls();
+    window.clearTimeout(state.searchTimer);
+    refreshQueue({ force: true });
+    el.searchInput.focus({ preventScroll: true });
   });
   document.querySelectorAll(".chip").forEach((chip) => {
     chip.addEventListener("click", () => {
