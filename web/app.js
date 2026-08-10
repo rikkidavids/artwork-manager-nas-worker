@@ -320,6 +320,33 @@ function candidateLabel(candidate) {
   return `${parts.join(" - ")}${title}`;
 }
 
+function candidateWarnings(candidate) {
+  return Array.isArray(candidate?.warnings)
+    ? candidate.warnings.map((warning) => String(warning || "").trim()).filter(Boolean)
+    : [];
+}
+
+function candidateShortLabel(candidate) {
+  if (!candidate) return "No candidate selected.";
+  const parts = [];
+  if (candidate.source) parts.push(candidate.source);
+  if (candidate.size_label) parts.push(candidate.size_label);
+  if (candidate.score || candidate.score === 0) parts.push(`${candidate.score}/100`);
+  const warnings = candidateWarnings(candidate);
+  if (warnings.length) parts.push(warnings[0]);
+  return parts.join(" - ") || "Candidate cover";
+}
+
+function candidateApprovalWarning(candidate) {
+  const warnings = candidateWarnings(candidate);
+  const score = Number(candidate?.score || 0);
+  const concerns = [];
+  if (warnings.length) concerns.push(warnings.slice(0, 3).join(", "));
+  if (score && score < 70) concerns.push(`score ${score}/100`);
+  if (!concerns.length) return "";
+  return `This cover has a warning (${concerns.join("; ")}). Approve and embed it anyway?`;
+}
+
 function googleImagesUrl(album) {
   if (!album) return "";
   const target = Number(state.settings.preferred_artwork_size || state.settings.scan_min_artwork_size || 1200);
@@ -603,6 +630,9 @@ async function refreshStatus() {
     if (app.settings) {
       state.settings = app.settings;
       state.settingsLoaded = true;
+      if (el.settingsOverlay.classList.contains("hidden")) {
+        applyTheme(app.settings.theme_mode || localStorage.getItem("amwThemeMode") || "Auto");
+      }
     }
     setCounts(counts);
     renderScan(status);
@@ -761,6 +791,7 @@ function renderCandidate() {
     } else {
       el.candidateMeta.textContent = "Find artwork to see options.";
     }
+    el.candidateMeta.removeAttribute("title");
     if (!state.actionActive) {
       el.actionMessage.textContent = idleActionMessage(album);
     }
@@ -768,8 +799,8 @@ function renderCandidate() {
     updateActionButtons();
     return;
   }
-  const warnings = Array.isArray(candidate.warnings) && candidate.warnings.length ? ` - ${candidate.warnings.slice(0, 2).join(", ")}` : "";
-  el.candidateMeta.textContent = `${candidateLabel(candidate)}${warnings}`;
+  el.candidateMeta.textContent = candidateShortLabel(candidate);
+  el.candidateMeta.title = candidateLabel(candidate);
   if (!state.actionActive) {
     el.actionMessage.textContent = idleActionMessage(album);
   }
@@ -929,6 +960,8 @@ async function approveSelectedCandidate() {
   const album = selectedAlbum();
   const candidate = selectedCandidate();
   if (!album || !candidate) return;
+  const warning = candidateApprovalWarning(candidate);
+  if (warning && !window.confirm(warning)) return;
   state.actionActive = true;
   el.actionMessage.textContent = "Embedding artwork on the NAS...";
   updateActionButtons();

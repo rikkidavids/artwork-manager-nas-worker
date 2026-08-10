@@ -372,7 +372,7 @@ dt,
 }
 
 .detail-pane {
-  --cover-slot: clamp(260px, 25vw, 360px);
+  --cover-slot: clamp(240px, 22vw, 330px);
   overflow: hidden;
 }
 
@@ -612,7 +612,7 @@ tbody tr.selected {
 
 .art-panel {
   display: flex;
-  min-height: calc(var(--cover-slot) + 58px);
+  min-height: calc(var(--cover-slot) + 66px);
   flex-direction: column;
   overflow: hidden;
 }
@@ -629,7 +629,7 @@ tbody tr.selected {
   width: min(100%, var(--cover-slot));
   max-width: var(--cover-slot);
   aspect-ratio: 1 / 1;
-  margin: 6px auto 6px;
+  margin: 5px auto 5px;
   border: 1px dashed var(--line);
   border-radius: 8px;
   background: var(--cover-bg);
@@ -669,8 +669,8 @@ tbody tr.selected {
 #coverMeta,
 #candidateMeta {
   display: -webkit-box;
-  flex: 0 0 24px;
-  min-height: 24px;
+  flex: 0 0 34px;
+  min-height: 34px;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -693,7 +693,7 @@ tbody tr.selected {
 
 .review-bottom {
   display: grid;
-  flex: 1 1 0;
+  flex: 1 1 auto;
   min-height: 170px;
   grid-template-columns: repeat(2, minmax(260px, 1fr));
   align-items: stretch;
@@ -802,9 +802,9 @@ tbody tr.selected {
 
 .artwork-viewer {
   display: grid;
-  width: min(980px, calc(100vw - 48px));
-  height: min(860px, calc(100vh - 48px));
-  max-height: calc(100vh - 48px);
+  width: min(980px, calc(100dvw - 48px));
+  height: min(860px, calc(100dvh - 48px));
+  max-height: calc(100dvh - 48px);
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
   border: 1px solid var(--modal-line);
@@ -818,12 +818,20 @@ tbody tr.selected {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
   border-bottom: 1px solid var(--line);
   padding: 12px 14px;
 }
 
 .artwork-viewer-head > div {
   min-width: 0;
+  flex: 1 1 auto;
+}
+
+.artwork-viewer-head button {
+  flex: 0 0 auto;
 }
 
 .artwork-viewer-head p {
@@ -835,6 +843,9 @@ tbody tr.selected {
 
 .artwork-viewer-frame {
   display: grid;
+  place-items: center;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   padding: 14px;
@@ -843,10 +854,10 @@ tbody tr.selected {
 
 .artwork-viewer-frame img {
   display: block;
-  width: 100%;
-  max-width: none;
-  height: 100%;
-  max-height: none;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 100%;
   object-fit: contain;
   object-position: center;
   border-radius: 8px;
@@ -854,6 +865,8 @@ tbody tr.selected {
 
 .artwork-viewer-nav {
   display: flex;
+  width: 100%;
+  min-width: 0;
   justify-content: center;
   gap: 8px;
   border-top: 1px solid var(--line);
@@ -1031,7 +1044,7 @@ tbody tr.selected {
   }
 
   .detail-pane {
-    --cover-slot: clamp(240px, 30vw, 330px);
+    --cover-slot: clamp(220px, 27vw, 310px);
   }
 
   .review-grid {
@@ -1050,42 +1063,63 @@ tbody tr.selected {
 
 @media (max-width: 900px) {
   body {
-    overflow: auto;
+    overflow: hidden;
   }
 
   .shell {
-    height: auto;
-    min-height: 100vh;
+    height: 100dvh;
+    min-height: 0;
   }
 
-  .topbar {
-    align-items: flex-start;
-    flex-direction: column;
-    padding: 12px;
-  }
-
-  .top-actions {
-    width: 100%;
-    flex-wrap: wrap;
-  }
-
-  .workspace,
   .review-grid,
   .review-bottom {
     grid-template-columns: 1fr;
   }
 
   .workspace {
+    grid-template-columns: minmax(300px, 0.48fr) minmax(0, 0.52fr);
+    overflow: hidden;
+  }
+
+  .detail-pane {
+    --cover-slot: clamp(210px, 39vw, 320px);
+    gap: 8px;
+    overflow-y: auto;
+  }
+
+  .review-bottom {
+    margin-top: 0;
     overflow: visible;
   }
 
-  .detail-pane,
-  .review-bottom {
-    overflow: visible;
+  .detail-pane.mode-review .review-grid,
+  .detail-pane.mode-review .review-bottom {
+    display: contents;
+  }
+
+  .detail-pane.mode-review #candidatePanel {
+    order: 1;
+  }
+
+  .detail-pane.mode-review .actions-panel {
+    order: 2;
+  }
+
+  .detail-pane.mode-review #currentPanel {
+    order: 3;
+    min-height: 0;
+  }
+
+  .detail-pane.mode-review #currentPanel .cover-box {
+    width: min(100%, 220px);
+  }
+
+  .detail-pane.mode-review .notes-panel {
+    order: 4;
   }
 
   .table-wrap {
-    min-height: 390px;
+    min-height: 0;
   }
 
   .settings-window {
@@ -1125,6 +1159,8 @@ tbody tr.selected {
   }
 
   .topbar {
+    align-items: flex-start;
+    flex-direction: column;
     min-height: 0;
     gap: 10px;
     padding: 10px;
@@ -1162,6 +1198,11 @@ tbody tr.selected {
     flex: 1 1 0;
   }
 
+  .top-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
   .unlock-panel,
   .scan-panel {
     margin: 8px 8px 0;
@@ -1188,6 +1229,7 @@ tbody tr.selected {
 
   .detail-pane {
     --cover-slot: min(calc(100vw - 56px), 360px);
+    gap: 8px;
   }
 
   body.detail-open .queue-pane {
@@ -1267,6 +1309,7 @@ tbody tr.selected {
   .review-grid,
   .review-bottom {
     gap: 8px;
+    margin-top: 0;
   }
 
   .art-panel,
@@ -1345,10 +1388,10 @@ tbody tr.selected {
   }
 
   .artwork-viewer-frame {
-    padding: 10px;
+    padding: 8px;
   }
 
   .artwork-viewer-frame img {
-    max-height: none;
+    max-height: 100%;
   }
 }
