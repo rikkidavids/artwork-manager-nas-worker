@@ -19,6 +19,7 @@ const state = {
   detailOpen: false,
   viewerOpen: false,
   viewerKind: "",
+  problemKey: "",
 };
 
 const el = {
@@ -55,6 +56,9 @@ const el = {
   detailReason: document.getElementById("detailReason"),
   detailTracks: document.getElementById("detailTracks"),
   detailChecked: document.getElementById("detailChecked"),
+  problemFiles: document.getElementById("problemFiles"),
+  problemCount: document.getElementById("problemCount"),
+  problemFileList: document.getElementById("problemFileList"),
   actionsTitle: document.getElementById("actionsTitle"),
   actionMessage: document.getElementById("actionMessage"),
   primaryActionRow: document.getElementById("primaryActionRow"),
@@ -152,6 +156,12 @@ function shortPath(path) {
   const bits = String(path || "").split("/").filter(Boolean);
   if (bits.length <= 3) return path || "";
   return ".../" + bits.slice(-3).join("/");
+}
+
+function shortProblemPath(path) {
+  const bits = String(path || "").split("/").filter(Boolean);
+  if (!bits.length) return "Unknown file";
+  return bits.slice(-2).join("/");
 }
 
 function formatDateTime(value) {
@@ -672,21 +682,22 @@ function renderRows() {
 
 async function refreshQueue(options = {}) {
   const force = Boolean(options.force);
+  const autoHandoff = Boolean(options.autoHandoff) && !state.query;
   const previousSelected = state.selectedKey;
   const params = new URLSearchParams({ bucket: state.bucket, q: state.query });
   try {
     const payload = await api(`/api/albums?${params}`);
     const counts = payload.counts || {};
     const albums = payload.albums || [];
-    if (!state.query && !albums.length && state.bucket === "Review" && Number(counts["Needs Work"] || 0) > 0) {
+    if (autoHandoff && !albums.length && state.bucket === "Review" && Number(counts["Needs Work"] || 0) > 0) {
       state.bucket = "Needs Work";
       localStorage.setItem("amwBucket", state.bucket);
-      return refreshQueue({ force: true });
+      return refreshQueue({ force: true, autoHandoff: false });
     }
-    if (!state.query && !albums.length && state.bucket === "Needs Work" && Number(counts["Review"] || 0) > 0) {
+    if (autoHandoff && !albums.length && state.bucket === "Needs Work" && Number(counts["Review"] || 0) > 0) {
       state.bucket = "Review";
       localStorage.setItem("amwBucket", state.bucket);
-      return refreshQueue({ force: true });
+      return refreshQueue({ force: true, autoHandoff: false });
     }
     const signature = queueSignature(albums);
     const queueChanged = force || signature !== state.queueSignature || albums.length !== state.albums.length;
@@ -830,6 +841,60 @@ async function refreshCandidates(album, preferredCandidateId = null) {
   }
 }
 
+function clearProblemFiles(message = "") {
+  state.problemKey = "";
+  el.problemFiles.classList.toggle("hidden", !message);
+  el.problemCount.textContent = "";
+  el.problemFileList.innerHTML = message ? `<li><div class="problem-file-name">${message}</div></li>` : "";
+}
+
+function renderProblemFiles(problemFiles, check) {
+  const problems = Array.isArray(problemFiles) ? problemFiles : [];
+  if (!problems.length) {
+    clearProblemFiles();
+    return;
+  }
+  const visible = problems.slice(0, 6);
+  el.problemFiles.classList.remove("hidden");
+  el.problemCount.textContent = problems.length > visible.length ? `${visible.length} of ${problems.length}` : `${problems.length}`;
+  el.problemFileList.innerHTML = "";
+  const fragment = document.createDocumentFragment();
+  visible.forEach((problem) => {
+    const issues = Array.isArray(problem.issues) ? problem.issues.join(", ") : String(problem.issue || problem.reason || "");
+    const dims = problem.dimensions ? ` (${problem.dimensions})` : "";
+    const item = document.createElement("li");
+    const name = document.createElement("div");
+    const issue = document.createElement("div");
+    name.className = "problem-file-name";
+    issue.className = "problem-file-issue";
+    name.textContent = shortProblemPath(problem.file || problem.path || problem.name || "");
+    name.title = problem.file || problem.path || problem.name || "";
+    issue.textContent = `${issues || "Needs attention"}${dims}`;
+    item.append(name, issue);
+    fragment.appendChild(item);
+  });
+  el.problemFileList.appendChild(fragment);
+}
+
+async function loadProblemFiles(album) {
+  if (!album || workflowMode(album) === "done") {
+    clearProblemFiles();
+    return;
+  }
+  const albumKey = album.album_key;
+  state.problemKey = albumKey;
+  clearProblemFiles();
+  state.problemKey = albumKey;
+  try {
+    const payload = await api(`/api/album/problems?album_key=${encodeURIComponent(albumKey)}`);
+    if (state.problemKey !== albumKey || state.selectedKey !== albumKey) return;
+    renderProblemFiles(payload.problem_files || [], payload.deep_file_check || {});
+  } catch (error) {
+    if (state.problemKey !== albumKey || state.selectedKey !== albumKey) return;
+    clearProblemFiles();
+  }
+}
+
 function renderSelected() {
   const album = selectedAlbum();
   el.albumRows.querySelectorAll("tr").forEach((row) => {
@@ -849,6 +914,7 @@ function renderSelected() {
     el.detailReason.textContent = "-";
     el.detailTracks.textContent = "-";
     el.detailChecked.textContent = "-";
+    clearProblemFiles();
     el.actionMessage.textContent = "Select an album to begin.";
     loadCover(null);
     refreshCandidates(null);
@@ -873,6 +939,7 @@ function renderSelected() {
   renderCandidate();
   loadCover(album);
   refreshCandidates(album);
+  loadProblemFiles(album);
   updateActionButtons();
 }
 
@@ -1048,7 +1115,7 @@ async function rejectSelectedCandidate() {
       method: "POST",
       body: JSON.stringify({ album_key: album.album_key, candidate_id: candidate.candidate_id }),
     });
-    await refreshQueue();
+    await refreshQueue({ autoHandoff: true });
     await refreshCandidates(selectedAlbum());
   } catch (error) {
     el.actionMessage.textContent = error.message || "Candidate could not be rejected.";
@@ -1064,7 +1131,7 @@ async function runAlbumAction(path, message) {
       body: JSON.stringify({ album_key: album.album_key }),
     });
     el.actionMessage.textContent = message;
-    await refreshQueue();
+    await refreshQueue({ autoHandoff: true });
   } catch (error) {
     el.actionMessage.textContent = error.message || "Action failed.";
   }
@@ -1270,7 +1337,8 @@ async function tick() {
   try {
     const status = await refreshStatus();
     if (status && (state.scanActive || state.actionActive || hadAction)) {
-      await refreshQueue();
+      const actionFinished = hadAction && !state.actionActive;
+      await refreshQueue({ autoHandoff: actionFinished });
       if (state.selectedKey) {
         await refreshCandidates(selectedAlbum());
       }

@@ -790,6 +790,60 @@ tbody tr.selected {
   white-space: nowrap;
 }
 
+.problem-files {
+  margin-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 10px;
+}
+
+.problem-files-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.problem-files-head strong {
+  color: var(--field-text);
+}
+
+.problem-files ul {
+  display: grid;
+  gap: 6px;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.problem-files li {
+  min-width: 0;
+  border-radius: 7px;
+  background: var(--surface-soft);
+  padding: 7px 9px;
+}
+
+.problem-file-name,
+.problem-file-issue {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.problem-file-name {
+  color: var(--field-text);
+  font-weight: 800;
+}
+
+.problem-file-issue {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .artwork-overlay {
   position: fixed;
   inset: 0;

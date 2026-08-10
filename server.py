@@ -36,8 +36,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.27'
-APP_BUILD = '5.27'
+WORKER_BUILD = '5.28'
+APP_BUILD = '5.28'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -46,7 +46,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.27 polishes responsive review layout and artwork inspection.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.28 keeps manual queue filters sticky.'
 )
 
 
@@ -252,7 +252,8 @@ def status_payload(public: bool = False) -> Dict[str, Any]:
         'endpoints': [
             'GET /app/', 'GET /', 'GET /version', 'GET /health', 'GET /status',
             'GET /api/app/status', 'GET /api/settings', 'GET /api/albums',
-            'GET /api/candidates', 'GET /api/artwork/current', 'GET /api/artwork/candidate',
+            'GET /api/candidates', 'GET /api/album/problems',
+            'GET /api/artwork/current', 'GET /api/artwork/candidate',
             'POST /api/settings', 'POST /api/scan/start', 'POST /api/library/clear', 'POST /api/artwork/search',
             'POST /api/artwork/import', 'POST /api/artwork/approve', 'POST /api/artwork/convert-current',
             'POST /api/artwork/reject', 'POST /api/album/skip',
@@ -1262,6 +1263,30 @@ def web_get_album(album_key: str) -> Dict[str, Any] | None:
             (album_key,),
         ).fetchone()
     return web_album_from_row(row, settings) if row else None
+
+
+def web_album_problem_files(album_key: str) -> Dict[str, Any]:
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    album_path = safe_path(album.get('album_path') or '')
+    settings = web_get_settings()
+    target = web_effective_artwork_target(settings)
+    result = deep_check(
+        album_path,
+        target,
+        problem_files=True,
+        tolerance=target_tolerance(settings.get('target_size_match_mode')),
+    )
+    return {
+        'ok': True,
+        'album_key': album_key,
+        'target_size': target,
+        **result,
+        'worker_build': WORKER_BUILD,
+        'api': WORKER_API,
+        'worker_api': WORKER_API,
+    }
 
 
 def web_row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
@@ -3254,6 +3279,16 @@ class Handler(BaseHTTPRequestHandler):
             include_rejected = web_bool((params.get('include_rejected') or ['false'])[0], False)
             candidates = [web_public_candidate(c) for c in web_list_candidates(album_key, include_rejected=include_rejected)]
             self._send(200, {'ok': True, 'album_key': album_key, 'candidates': candidates, 'candidate_count': len(candidates)})
+            return
+        if route == '/api/album/problems':
+            if not self._auth_ok():
+                self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            album_key = (params.get('album_key') or [''])[0]
+            try:
+                self._send(200, web_album_problem_files(album_key))
+            except Exception as exc:
+                self._send(404, {'ok': False, 'error': str(exc), 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
             return
         if route == '/api/artwork/current':
             if not self._auth_ok():
