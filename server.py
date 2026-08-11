@@ -36,8 +36,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.31'
-APP_BUILD = '5.31'
+WORKER_BUILD = '5.32'
+APP_BUILD = '5.32'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -46,7 +46,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.31 adds web backup history and restore.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.32 adds web diagnostics and queue maintenance.'
 )
 
 
@@ -211,6 +211,9 @@ def finish_job(job_id: str, started_mono: float, ok: bool, result: Dict[str, Any
                     record['failed_count'] = len(result.get('failed') or [])
                 except Exception:
                     record['failed_count'] = 0
+            for key in ('checked', 'changed', 'skipped', 'unavailable', 'removed', 'affected_albums', 'reclassified'):
+                if key in result:
+                    record[key] = result.get(key)
             for key in ('candidate_count', 'saved_candidate_ids', 'status', 'reason'):
                 if key in result:
                     record[key] = result.get(key)
@@ -251,13 +254,15 @@ def status_payload(public: bool = False) -> Dict[str, Any]:
         'recent_job_count': len(recent),
         'endpoints': [
             'GET /app/', 'GET /', 'GET /version', 'GET /health', 'GET /status',
-            'GET /api/app/status', 'GET /api/settings', 'GET /api/albums',
+            'GET /api/app/status', 'GET /api/settings', 'GET /api/diagnostics', 'GET /api/albums',
             'GET /api/candidates', 'GET /api/album/problems',
             'GET /api/artwork/current', 'GET /api/artwork/candidate', 'GET /api/backups',
             'POST /api/settings', 'POST /api/scan/start', 'POST /api/library/clear', 'POST /api/artwork/search',
             'POST /api/artwork/import', 'POST /api/artwork/approve', 'POST /api/artwork/convert-current',
             'POST /api/artwork/reject', 'POST /api/album/skip',
-            'POST /api/album/mark-good', 'POST /api/backup/restore', 'POST /scan-library', 'POST /embed', 'POST /deep-check',
+            'POST /api/album/mark-good', 'POST /api/backup/restore',
+            'POST /api/maintenance/clean-stale-candidates', 'POST /api/maintenance/repair-queue',
+            'POST /scan-library', 'POST /embed', 'POST /deep-check',
             'POST /path-check',
         ],
         'update_hint': UPDATE_HINT,
@@ -1127,6 +1132,292 @@ def web_apply_scan_result(result: Dict[str, Any]) -> Dict[str, Any]:
             web_upsert_album(item)
             updated += 1
     return {'updated_rows': updated, 'counts': web_queue_counts()}
+
+
+def web_block_if_busy(action: str) -> None:
+    with JOB_LOCK:
+        if ACTIVE_JOBS:
+            raise WorkerBusyError(f'Wait for the current job to finish before running {action}.')
+
+
+def web_table_counts() -> Dict[str, int]:
+    with db_connect() as conn:
+        out = {}
+        for table in ('albums', 'candidates', 'history'):
+            row = conn.execute(f'SELECT COUNT(*) AS n FROM {table}').fetchone()
+            out[table] = int(row['n'] if row else 0)
+        return out
+
+
+def web_candidate_state_counts() -> Dict[str, int]:
+    with db_connect() as conn:
+        rows = conn.execute(
+            '''
+            SELECT
+              CASE
+                WHEN approved=1 THEN 'approved'
+                WHEN rejected=1 THEN COALESCE(candidate_state, 'rejected')
+                ELSE COALESCE(candidate_state, 'available')
+              END AS state,
+              COUNT(*) AS n
+            FROM candidates
+            GROUP BY state
+            '''
+        ).fetchall()
+    return {str(row['state'] or 'unknown'): int(row['n'] or 0) for row in rows}
+
+
+def web_setting_snapshot() -> Dict[str, Any]:
+    settings = dict(web_get_settings())
+    for key in list(settings):
+        if 'token' in key.lower() or 'secret' in key.lower():
+            settings[key] = 'set (hidden)' if settings.get(key) else ''
+    return settings
+
+
+def web_recent_history(limit: int = 15) -> List[Dict[str, Any]]:
+    with db_connect() as conn:
+        rows = conn.execute(
+            '''
+            SELECT h.id, h.album_key, h.action, h.created_at, a.artist, a.album
+            FROM history h LEFT JOIN albums a ON a.album_key=h.album_key
+            ORDER BY h.id DESC
+            LIMIT ?
+            ''',
+            (max(1, min(int(limit or 15), 100)),),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def web_diagnostics_payload(album_key: str = '') -> Dict[str, Any]:
+    selected = web_get_album(album_key) if album_key else None
+    status = status_payload(public=False)
+    return {
+        'generated_at': now(),
+        'worker': {
+            'build': WORKER_BUILD,
+            'app_build': APP_BUILD,
+            'api': WORKER_API,
+            'uptime_seconds': status.get('uptime_seconds'),
+            'busy': status.get('busy'),
+            'token_required': bool(API_TOKEN),
+        },
+        'paths': {
+            'music_roots': [path_status(path) for path in MUSIC_ROOTS],
+            'backup_root': path_status(BACKUP_ROOT),
+            'data_root': path_status(DATA_ROOT),
+            'candidate_temp': path_status(TEMP_CANDIDATE_DIR),
+        },
+        'queue_counts': web_queue_counts(),
+        'database_counts': web_table_counts(),
+        'candidate_states': web_candidate_state_counts(),
+        'settings': web_setting_snapshot(),
+        'selected_album': selected or {},
+        'selected_candidates': [web_public_candidate(c) for c in web_list_candidates(album_key, include_rejected=True)] if album_key else [],
+        'active_jobs': status.get('active_jobs') or [],
+        'recent_jobs': status.get('recent_jobs') or [],
+        'recent_history': web_recent_history(),
+    }
+
+
+def web_diagnostics_text(album_key: str = '') -> str:
+    payload = web_diagnostics_payload(album_key)
+    lines = [
+        'Artwork Manager NAS diagnostics',
+        f"Generated: {payload.get('generated_at')}",
+        f"Build: {WORKER_BUILD}",
+        f"API: {WORKER_API}",
+        '',
+    ]
+    for title, key in (
+        ('Worker', 'worker'),
+        ('Paths', 'paths'),
+        ('Queue Counts', 'queue_counts'),
+        ('Database Counts', 'database_counts'),
+        ('Candidate States', 'candidate_states'),
+        ('Settings', 'settings'),
+        ('Selected Album', 'selected_album'),
+        ('Selected Candidates', 'selected_candidates'),
+        ('Active Jobs', 'active_jobs'),
+        ('Recent Jobs', 'recent_jobs'),
+        ('Recent History', 'recent_history'),
+    ):
+        lines.append(title + ':')
+        lines.append(json.dumps(payload.get(key), indent=2, sort_keys=True, default=str))
+        lines.append('')
+    return '\n'.join(lines)
+
+
+def web_delete_candidate_ids(candidate_ids: List[Any]) -> int:
+    ids = []
+    for value in candidate_ids or []:
+        try:
+            ids.append(int(value))
+        except Exception:
+            pass
+    if not ids:
+        return 0
+    placeholders = ','.join('?' for _ in ids)
+    with db_connect() as conn:
+        cur = conn.execute(f'DELETE FROM candidates WHERE id IN ({placeholders})', ids)
+        return int(cur.rowcount or 0)
+
+
+def web_cleanup_stale_candidates() -> Dict[str, Any]:
+    web_block_if_busy('stale option cleanup')
+    with db_connect() as conn:
+        rows = conn.execute('SELECT id, album_key, image_path FROM candidates').fetchall()
+    stale_ids = []
+    affected = set()
+    for row in rows:
+        path_text = str(row['image_path'] or '').strip()
+        missing = False
+        if not path_text:
+            missing = True
+        else:
+            try:
+                path = web_data_path(path_text)
+                missing = not path.is_file()
+            except Exception:
+                missing = True
+        if missing:
+            stale_ids.append(row['id'])
+            if row['album_key']:
+                affected.add(str(row['album_key']))
+    removed = web_delete_candidate_ids(stale_ids)
+    reclassified = 0
+    for album_key in affected:
+        album = web_get_album(album_key)
+        if not album:
+            continue
+        if album.get('stored_status') == 'candidate_found' and web_active_candidate_count(album_key) <= 0:
+            web_set_album_status(album_key, 'no_candidate', 'Saved artwork options were missing; search again.')
+            reclassified += 1
+    web_add_history('', 'web_cleanup_stale_candidates', {
+        'removed': removed,
+        'affected_albums': len(affected),
+        'reclassified': reclassified,
+    })
+    return {
+        'ok': True,
+        'removed': removed,
+        'affected_albums': len(affected),
+        'reclassified': reclassified,
+        'counts': web_queue_counts(),
+    }
+
+
+def web_recheck_album_row(row: sqlite3.Row, settings: Dict[str, Any]) -> Dict[str, Any]:
+    album_key = str(row['album_key'] or '')
+    album_path = str(row['album_path'] or '')
+    raw_status = str(row['status'] or '')
+    if raw_status in {'reviewed_skipped', 'ignored'}:
+        return {'album_key': album_key, 'skipped': True, 'reason': 'User-handled album left alone.'}
+    folder = safe_path(album_path)
+    if not folder.is_dir():
+        raise FileNotFoundError('Album folder is unavailable.')
+    target = web_effective_artwork_target(settings)
+    deep_result = deep_check(
+        folder,
+        target,
+        problem_files=False,
+        tolerance=target_tolerance(settings.get('target_size_match_mode')),
+    )
+    deep = deep_result.get('deep_file_check') or {}
+    status, reason = web_status_from_deep_check(deep)
+    active_candidates = web_active_candidate_count(album_key)
+    if status != 'already_good' and active_candidates:
+        status = 'candidate_found'
+        reason = f'{active_candidates} saved artwork option(s) ready.'
+    notes = web_decode_notes(row['notes'])
+    notes.update({
+        'status_reason': reason,
+        'deep_file_check': deep,
+        'last_queue_repair': {
+            'checked_at': now(),
+            'target_size': target,
+        },
+    })
+    width = deep.get('example_width') or deep.get('min_width')
+    height = deep.get('example_height') or deep.get('min_height')
+    example = deep.get('example_file') or deep.get('first_issue_file') or row['example_file'] or ''
+    changed = (
+        status != raw_status or
+        str(width or '') != str(row['width'] or '') or
+        str(height or '') != str(row['height'] or '')
+    )
+    with db_connect() as conn:
+        conn.execute(
+            'UPDATE albums SET status=?, width=?, height=?, example_file=?, notes=?, last_scanned=? WHERE album_key=?',
+            (status, width, height, example, json.dumps(notes), now(), album_key),
+        )
+    return {
+        'album_key': album_key,
+        'status': status,
+        'reason': reason,
+        'changed': bool(changed),
+        'checked_files': deep.get('checked_files') or 0,
+    }
+
+
+def web_repair_queue_statuses(job_id: str = '') -> Dict[str, Any]:
+    settings = web_get_settings()
+    with db_connect() as conn:
+        rows = conn.execute('SELECT * FROM albums ORDER BY amw_fold(artist), amw_fold(album), amw_fold(album_path)').fetchall()
+    total = len(rows)
+    checked = 0
+    changed = 0
+    skipped = 0
+    unavailable = 0
+    failed = []
+    for index, row in enumerate(rows, 1):
+        label = f"{row['artist'] or 'Unknown'} - {row['album'] or 'Unknown'}"
+        update_job(job_id, label=f'Rechecking {index}/{total}: {label}', processed_albums=checked, total=total)
+        try:
+            result = web_recheck_album_row(row, settings)
+            if result.get('skipped'):
+                skipped += 1
+            else:
+                checked += 1
+                if result.get('changed'):
+                    changed += 1
+        except Exception as exc:
+            unavailable += 1
+            failed.append({'album_key': row['album_key'], 'album': label, 'error': str(exc)})
+    summary = {
+        'ok': True,
+        'total': total,
+        'checked': checked,
+        'changed': changed,
+        'skipped': skipped,
+        'unavailable': unavailable,
+        'failed': failed[:50],
+        'failed_count': len(failed),
+        'counts': web_queue_counts(settings),
+    }
+    web_add_history('', 'web_repair_queue', summary)
+    return summary
+
+
+def start_web_repair_queue(payload: Dict[str, Any]) -> Dict[str, Any]:
+    web_block_if_busy('queue repair')
+    settings = web_get_settings()
+    library_root = safe_path(str(settings.get('library_root') or (str(MUSIC_ROOTS[0]) if MUSIC_ROOTS else '/music')))
+    job_id, started_mono, _album_folder = begin_job('repair-queue', {
+        'album_folder': str(library_root),
+        'artist': 'Maintenance',
+        'album': 'Repair Queue',
+    })
+
+    def worker() -> None:
+        try:
+            result = web_repair_queue_statuses(job_id=job_id)
+            finish_job(job_id, started_mono, bool(result.get('ok')), result=result)
+        except Exception as exc:
+            finish_job(job_id, started_mono, False, error=str(exc))
+
+    threading.Thread(target=worker, name=f'ArtworkManagerRepairQueue-{job_id}', daemon=True).start()
+    return {'ok': True, 'job_id': job_id, 'message': 'Queue repair started on the NAS.'}
 
 
 def web_clear_queue_database() -> Dict[str, Any]:
@@ -3526,6 +3817,13 @@ class Handler(BaseHTTPRequestHandler):
                 'worker_api': WORKER_API,
             })
             return
+        if route == '/api/diagnostics':
+            if not self._auth_ok():
+                self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            album_key = (params.get('album_key') or [''])[0]
+            self._send_bytes(200, web_diagnostics_text(album_key).encode('utf-8'), 'text/plain; charset=utf-8', cache='no-store')
+            return
         if route == '/api/albums':
             if not self._auth_ok():
                 self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
@@ -3656,6 +3954,14 @@ class Handler(BaseHTTPRequestHandler):
             if route == '/api/backup/restore':
                 result = start_web_restore_backup(payload)
                 self._send(200, result)
+                return
+            if route == '/api/maintenance/clean-stale-candidates':
+                result = web_cleanup_stale_candidates()
+                self._send(200, {'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API, **result})
+                return
+            if route == '/api/maintenance/repair-queue':
+                result = start_web_repair_queue(payload)
+                self._send(200, {'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API, **result})
                 return
             if route == '/path-check':
                 album_folder = safe_path(payload.get('album_folder') or '')

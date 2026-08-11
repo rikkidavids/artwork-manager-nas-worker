@@ -177,6 +177,7 @@
           <button class="settings-tab active" type="button" data-settings-tab="general">General</button>
           <button class="settings-tab" type="button" data-settings-tab="scanning">Scanning</button>
           <button class="settings-tab" type="button" data-settings-tab="artwork">Artwork</button>
+          <button class="settings-tab" type="button" data-settings-tab="maintenance">Maintenance</button>
           <button class="settings-tab" type="button" data-settings-tab="safety">Safety</button>
           <button class="settings-tab" type="button" data-settings-tab="security">Security</button>
         </aside>
@@ -303,6 +304,28 @@
                   <input id="settingProviderWorkers" name="parallel_provider_workers" type="number" min="1" max="4" step="1">
                 </label>
               </div>
+            </div>
+          </section>
+
+          <section class="settings-panel" data-settings-panel="maintenance">
+            <div class="setting-card">
+              <div class="setting-card-head">
+                <div>
+                  <h3>Diagnostics</h3>
+                  <p class="setting-note">Download a small report with build, settings, queue counts, paths, recent jobs, and the selected album.</p>
+                </div>
+                <button id="downloadDiagnosticsBtn" class="ghost" type="button">Download</button>
+              </div>
+            </div>
+
+            <div class="setting-card">
+              <h3>Queue Repair</h3>
+              <p class="setting-note">Recheck albums on the NAS using your current artwork rules. Useful after changing the target size or restoring files outside the app.</p>
+              <div class="maintenance-actions">
+                <button id="repairQueueBtn" class="ghost" type="button">Repair Queue</button>
+                <button id="cleanupStaleBtn" class="ghost" type="button">Clean Stale Options</button>
+              </div>
+              <p id="maintenanceResult" class="maintenance-result">No maintenance run this session.</p>
             </div>
           </section>
 

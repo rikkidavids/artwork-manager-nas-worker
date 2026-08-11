@@ -108,6 +108,10 @@ const el = {
   settingProviderWorkers: document.getElementById("settingProviderWorkers"),
   settingToken: document.getElementById("settingToken"),
   settingTokenRequired: document.getElementById("settingTokenRequired"),
+  downloadDiagnosticsBtn: document.getElementById("downloadDiagnosticsBtn"),
+  repairQueueBtn: document.getElementById("repairQueueBtn"),
+  cleanupStaleBtn: document.getElementById("cleanupStaleBtn"),
+  maintenanceResult: document.getElementById("maintenanceResult"),
   loadBackupsBtn: document.getElementById("loadBackupsBtn"),
   backupList: document.getElementById("backupList"),
   artworkOverlay: document.getElementById("artworkOverlay"),
@@ -408,6 +412,7 @@ function settingsTitle(tab) {
     general: "General",
     scanning: "Scanning",
     artwork: "Artwork",
+    maintenance: "Maintenance",
     safety: "Safety",
     security: "Security",
   }[tab] || "Settings";
@@ -508,6 +513,114 @@ async function restoreBackup(historyId) {
     renderBackupList();
     updateActionButtons();
   }
+}
+
+function maintenanceMessage(text) {
+  if (el.maintenanceResult) el.maintenanceResult.textContent = text;
+  if (el.settingsMessage) el.settingsMessage.textContent = text;
+}
+
+function diagnosticsFilename() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `artwork-manager-diagnostics-${stamp}.txt`;
+}
+
+async function downloadDiagnostics() {
+  if (!state.token && state.appInfo.token_required) {
+    setSettingsTab("security");
+    maintenanceMessage("Enter the NAS token first.");
+    return;
+  }
+  const selected = state.selectedKey ? `?album_key=${encodeURIComponent(state.selectedKey)}` : "";
+  maintenanceMessage("Preparing diagnostics...");
+  try {
+    const response = await fetch(`/api/diagnostics${selected}`, { headers: headers() });
+    if (response.status === 401) throw new Error("Token required");
+    if (!response.ok) throw new Error("Diagnostics could not be created.");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = diagnosticsFilename();
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    maintenanceMessage("Diagnostics downloaded.");
+  } catch (error) {
+    if (error.message === "Token required") {
+      el.unlockPanel.classList.remove("hidden");
+      setSettingsTab("security");
+    }
+    maintenanceMessage(error.message || "Diagnostics could not be created.");
+  }
+}
+
+function maintenanceSummary(payload = {}) {
+  if (payload.job_id) return "Queue repair started. This can take a little while on a large library.";
+  const removed = Number(payload.removed || 0);
+  const affected = Number(payload.affected_albums || 0);
+  const reclassified = Number(payload.reclassified || 0);
+  return `Cleaned ${fmt(removed)} stale option${removed === 1 ? "" : "s"} from ${fmt(affected)} album${affected === 1 ? "" : "s"}. ${fmt(reclassified)} album${reclassified === 1 ? "" : "s"} moved back to Needs Work.`;
+}
+
+function latestRecentJob(status, kind) {
+  const jobs = Array.isArray(status?.recent_jobs) ? status.recent_jobs : [];
+  return jobs.find((job) => job && job.kind === kind) || null;
+}
+
+function renderFinishedAction(status) {
+  const repair = latestRecentJob(status, "repair-queue");
+  if (!repair) return;
+  const checked = Number(repair.checked || 0);
+  const changed = Number(repair.changed || 0);
+  const unavailable = Number(repair.unavailable || 0);
+  const failed = Number(repair.failed_count || 0);
+  const issues = unavailable || failed ? ` ${fmt(unavailable + failed)} could not be checked.` : "";
+  maintenanceMessage(`Queue repair finished. Checked ${fmt(checked)} album${checked === 1 ? "" : "s"}; updated ${fmt(changed)}.${issues}`);
+}
+
+async function runMaintenance(path, options = {}) {
+  if (state.scanActive || state.actionActive) {
+    maintenanceMessage("Wait for the current job to finish first.");
+    return;
+  }
+  if (options.confirm && !window.confirm(options.confirm)) return;
+  state.actionActive = true;
+  maintenanceMessage(options.start || "Starting maintenance...");
+  updateActionButtons();
+  if (el.repairQueueBtn) el.repairQueueBtn.disabled = true;
+  if (el.cleanupStaleBtn) el.cleanupStaleBtn.disabled = true;
+  try {
+    const payload = await api(path, { method: "POST", body: JSON.stringify({}) });
+    maintenanceMessage(maintenanceSummary(payload));
+    await refreshStatus();
+    await refreshQueue({ force: true });
+    scheduleTick(payload.job_id ? 500 : 10000);
+  } catch (error) {
+    state.actionActive = false;
+    maintenanceMessage(error.message || "Maintenance could not start.");
+  } finally {
+    if (!state.actionActive) {
+      if (el.repairQueueBtn) el.repairQueueBtn.disabled = false;
+      if (el.cleanupStaleBtn) el.cleanupStaleBtn.disabled = false;
+      updateActionButtons();
+    }
+  }
+}
+
+function startRepairQueue() {
+  runMaintenance("/api/maintenance/repair-queue", {
+    start: "Starting queue repair...",
+    confirm: "Recheck every album on the NAS using the current artwork rules? This may take a while.",
+  });
+}
+
+function cleanStaleOptions() {
+  runMaintenance("/api/maintenance/clean-stale-candidates", {
+    start: "Cleaning stale artwork options...",
+    confirm: "Remove saved artwork options whose image files are no longer present?",
+  });
 }
 
 function populateSettings(payload = {}) {
@@ -656,7 +769,7 @@ function activeScanJob(status) {
 
 function activeReviewJob(status) {
   const jobs = Array.isArray(status.active_jobs) ? status.active_jobs : [];
-  return jobs.find((job) => job && ["artwork-search", "approve-embed", "convert-current", "restore-backup"].includes(job.kind));
+  return jobs.find((job) => job && ["artwork-search", "approve-embed", "convert-current", "restore-backup", "repair-queue"].includes(job.kind));
 }
 
 function renderScan(status) {
@@ -738,12 +851,16 @@ function updateActionButtons() {
 function renderReviewJob(status) {
   const job = activeReviewJob(status);
   state.actionActive = Boolean(job);
+  const maintenanceBusy = state.scanActive || state.actionActive;
+  if (el.repairQueueBtn) el.repairQueueBtn.disabled = maintenanceBusy;
+  if (el.cleanupStaleBtn) el.cleanupStaleBtn.disabled = maintenanceBusy;
   if (job) {
     const count = job.candidate_count ? ` - ${fmt(job.candidate_count)} option(s)` : "";
     const label = job.kind === "approve-embed"
       ? "Embedding artwork"
-      : (job.kind === "convert-current" ? "Converting current artwork" : (job.kind === "restore-backup" ? "Restoring backup" : "Searching artwork"));
+      : (job.kind === "convert-current" ? "Converting current artwork" : (job.kind === "restore-backup" ? "Restoring backup" : (job.kind === "repair-queue" ? "Repairing queue" : "Searching artwork")));
     el.actionMessage.textContent = `${label}${count}...`;
+    if (job.kind === "repair-queue") maintenanceMessage(job.label || "Repairing queue...");
   }
   updateActionButtons();
   if (!el.settingsOverlay.classList.contains("hidden")) renderBackupList();
@@ -1374,6 +1491,9 @@ function bind() {
     button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab || "general"));
   });
   if (el.loadBackupsBtn) el.loadBackupsBtn.addEventListener("click", loadBackupHistory);
+  if (el.downloadDiagnosticsBtn) el.downloadDiagnosticsBtn.addEventListener("click", downloadDiagnostics);
+  if (el.repairQueueBtn) el.repairQueueBtn.addEventListener("click", startRepairQueue);
+  if (el.cleanupStaleBtn) el.cleanupStaleBtn.addEventListener("click", cleanStaleOptions);
   if (el.backupList) {
     el.backupList.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-history-id]");
@@ -1498,6 +1618,7 @@ async function tick() {
     const status = await refreshStatus();
     if (status && (state.scanActive || state.actionActive || hadAction)) {
       const actionFinished = hadAction && !state.actionActive;
+      if (actionFinished) renderFinishedAction(status);
       await refreshQueue({ autoHandoff: actionFinished });
       if (state.selectedKey) {
         await refreshCandidates(selectedAlbum());

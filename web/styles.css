@@ -1135,6 +1135,25 @@ tbody tr.selected {
   accent-color: var(--blue);
 }
 
+.maintenance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.maintenance-result {
+  margin-top: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  padding: 12px;
+}
+
 .backup-list {
   display: grid;
   gap: 8px;
