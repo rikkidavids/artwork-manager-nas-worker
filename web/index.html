@@ -177,6 +177,7 @@
           <button class="settings-tab active" type="button" data-settings-tab="general">General</button>
           <button class="settings-tab" type="button" data-settings-tab="scanning">Scanning</button>
           <button class="settings-tab" type="button" data-settings-tab="artwork">Artwork</button>
+          <button class="settings-tab" type="button" data-settings-tab="safety">Safety</button>
           <button class="settings-tab" type="button" data-settings-tab="security">Security</button>
         </aside>
 
@@ -301,6 +302,21 @@
                   <span>Parallel providers</span>
                   <input id="settingProviderWorkers" name="parallel_provider_workers" type="number" min="1" max="4" step="1">
                 </label>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-panel" data-settings-panel="safety">
+            <div class="setting-card">
+              <div class="setting-card-head">
+                <div>
+                  <h3>Backup History</h3>
+                  <p class="setting-note">Recent embeds and conversions that saved file backups.</p>
+                </div>
+                <button id="loadBackupsBtn" class="ghost" type="button">Refresh</button>
+              </div>
+              <div id="backupList" class="backup-list">
+                <p class="backup-empty">Open this page to load recent backups.</p>
               </div>
             </div>
           </section>

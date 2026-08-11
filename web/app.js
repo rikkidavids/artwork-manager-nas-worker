@@ -7,6 +7,8 @@ const state = {
   coverUrl: "",
   candidateUrl: "",
   candidates: [],
+  backups: [],
+  backupsLoaded: false,
   candidateIndex: 0,
   scanActive: false,
   actionActive: false,
@@ -106,6 +108,8 @@ const el = {
   settingProviderWorkers: document.getElementById("settingProviderWorkers"),
   settingToken: document.getElementById("settingToken"),
   settingTokenRequired: document.getElementById("settingTokenRequired"),
+  loadBackupsBtn: document.getElementById("loadBackupsBtn"),
+  backupList: document.getElementById("backupList"),
   artworkOverlay: document.getElementById("artworkOverlay"),
   artworkViewerTitle: document.getElementById("artworkViewerTitle"),
   artworkViewerMeta: document.getElementById("artworkViewerMeta"),
@@ -404,6 +408,7 @@ function settingsTitle(tab) {
     general: "General",
     scanning: "Scanning",
     artwork: "Artwork",
+    safety: "Safety",
     security: "Security",
   }[tab] || "Settings";
 }
@@ -416,6 +421,93 @@ function setSettingsTab(tab) {
     panel.classList.toggle("active", panel.dataset.settingsPanel === tab);
   });
   el.settingsPanelTitle.textContent = settingsTitle(tab);
+  if (tab === "safety") {
+    loadBackupHistory();
+  }
+}
+
+function backupSubtitle(item) {
+  const pieces = [];
+  if (item.action_label) pieces.push(item.action_label);
+  if (item.created_at) pieces.push(formatDateTime(item.created_at));
+  if (item.backup_count) pieces.push(`${fmt(item.backup_count)} ${item.backup_count === 1 ? "file" : "files"}`);
+  return pieces.join(" - ");
+}
+
+function renderBackupList() {
+  if (!el.backupList) return;
+  if (!state.backupsLoaded) {
+    el.backupList.innerHTML = '<p class="backup-empty">Open this page to load recent backups.</p>';
+    return;
+  }
+  if (!state.backups.length) {
+    el.backupList.innerHTML = '<p class="backup-empty">No restorable backups found yet.</p>';
+    return;
+  }
+  el.backupList.innerHTML = "";
+  const fragment = document.createDocumentFragment();
+  state.backups.forEach((item) => {
+    const row = document.createElement("article");
+    const copy = document.createElement("div");
+    const title = document.createElement("strong");
+    const meta = document.createElement("p");
+    const button = document.createElement("button");
+    row.className = "backup-row";
+    copy.className = "backup-copy";
+    title.textContent = item.album_label || "Unknown album";
+    meta.textContent = item.missing_backup_count
+      ? `${backupSubtitle(item)} - ${fmt(item.missing_backup_count)} backup file(s) missing`
+      : backupSubtitle(item);
+    button.className = "ghost";
+    button.type = "button";
+    button.textContent = "Restore";
+    button.dataset.historyId = item.history_id;
+    button.disabled = state.actionActive || !item.restorable;
+    copy.append(title, meta);
+    row.append(copy, button);
+    fragment.appendChild(row);
+  });
+  el.backupList.appendChild(fragment);
+}
+
+async function loadBackupHistory() {
+  if (!el.backupList) return;
+  el.backupList.innerHTML = '<p class="backup-empty">Loading backups...</p>';
+  try {
+    const payload = await api("/api/backups?limit=100");
+    state.backups = payload.backups || [];
+    state.backupsLoaded = true;
+    renderBackupList();
+  } catch (error) {
+    state.backups = [];
+    state.backupsLoaded = true;
+    el.backupList.innerHTML = `<p class="backup-empty">${error.message || "Backups could not be loaded."}</p>`;
+  }
+}
+
+async function restoreBackup(historyId) {
+  const item = state.backups.find((backup) => String(backup.history_id) === String(historyId));
+  if (!item || state.actionActive || !item.restorable) return;
+  const confirmed = window.confirm(`Restore the previous files for ${item.album_label}? The current files will be backed up first.`);
+  if (!confirmed) return;
+  state.actionActive = true;
+  if (el.settingsMessage) el.settingsMessage.textContent = "Starting restore on the NAS...";
+  renderBackupList();
+  updateActionButtons();
+  try {
+    await api("/api/backup/restore", {
+      method: "POST",
+      body: JSON.stringify({ history_id: item.history_id }),
+    });
+    await refreshStatus();
+    scheduleTick(500);
+    if (el.settingsMessage) el.settingsMessage.textContent = "Restore started.";
+  } catch (error) {
+    state.actionActive = false;
+    if (el.settingsMessage) el.settingsMessage.textContent = error.message || "Restore could not start.";
+    renderBackupList();
+    updateActionButtons();
+  }
 }
 
 function populateSettings(payload = {}) {
@@ -564,7 +656,7 @@ function activeScanJob(status) {
 
 function activeReviewJob(status) {
   const jobs = Array.isArray(status.active_jobs) ? status.active_jobs : [];
-  return jobs.find((job) => job && ["artwork-search", "approve-embed", "convert-current"].includes(job.kind));
+  return jobs.find((job) => job && ["artwork-search", "approve-embed", "convert-current", "restore-backup"].includes(job.kind));
 }
 
 function renderScan(status) {
@@ -650,10 +742,11 @@ function renderReviewJob(status) {
     const count = job.candidate_count ? ` - ${fmt(job.candidate_count)} option(s)` : "";
     const label = job.kind === "approve-embed"
       ? "Embedding artwork"
-      : (job.kind === "convert-current" ? "Converting current artwork" : "Searching artwork");
+      : (job.kind === "convert-current" ? "Converting current artwork" : (job.kind === "restore-backup" ? "Restoring backup" : "Searching artwork"));
     el.actionMessage.textContent = `${label}${count}...`;
   }
   updateActionButtons();
+  if (!el.settingsOverlay.classList.contains("hidden")) renderBackupList();
 }
 
 async function refreshStatus() {
@@ -1280,6 +1373,13 @@ function bind() {
   document.querySelectorAll(".settings-tab").forEach((button) => {
     button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab || "general"));
   });
+  if (el.loadBackupsBtn) el.loadBackupsBtn.addEventListener("click", loadBackupHistory);
+  if (el.backupList) {
+    el.backupList.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-history-id]");
+      if (button) restoreBackup(button.dataset.historyId);
+    });
+  }
   el.settingThemeMode.addEventListener("change", () => applyTheme(el.settingThemeMode.value));
   el.scanBtn.addEventListener("click", startScan);
   if (el.freshScanBtn) el.freshScanBtn.addEventListener("click", startFreshScanFromSettings);

@@ -36,8 +36,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.30'
-APP_BUILD = '5.30'
+WORKER_BUILD = '5.31'
+APP_BUILD = '5.31'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -46,7 +46,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.30 hardens large artwork preview sizing.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.31 adds web backup history and restore.'
 )
 
 
@@ -253,11 +253,11 @@ def status_payload(public: bool = False) -> Dict[str, Any]:
             'GET /app/', 'GET /', 'GET /version', 'GET /health', 'GET /status',
             'GET /api/app/status', 'GET /api/settings', 'GET /api/albums',
             'GET /api/candidates', 'GET /api/album/problems',
-            'GET /api/artwork/current', 'GET /api/artwork/candidate',
+            'GET /api/artwork/current', 'GET /api/artwork/candidate', 'GET /api/backups',
             'POST /api/settings', 'POST /api/scan/start', 'POST /api/library/clear', 'POST /api/artwork/search',
             'POST /api/artwork/import', 'POST /api/artwork/approve', 'POST /api/artwork/convert-current',
             'POST /api/artwork/reject', 'POST /api/album/skip',
-            'POST /api/album/mark-good', 'POST /scan-library', 'POST /embed', 'POST /deep-check',
+            'POST /api/album/mark-good', 'POST /api/backup/restore', 'POST /scan-library', 'POST /embed', 'POST /deep-check',
             'POST /path-check',
         ],
         'update_hint': UPDATE_HINT,
@@ -1304,6 +1304,267 @@ def web_add_history(album_key: str, action: str, payload: Dict[str, Any]) -> Non
             'INSERT INTO history(album_key, action, payload, created_at) VALUES(?,?,?,?)',
             (album_key, action, json.dumps(payload or {}), now()),
         )
+
+
+def web_decode_history_payload(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {}
+
+
+def web_history_row(history_id: Any) -> sqlite3.Row | None:
+    try:
+        hid = int(history_id)
+    except Exception:
+        return None
+    with db_connect() as conn:
+        return conn.execute('SELECT * FROM history WHERE id=?', (hid,)).fetchone()
+
+
+def web_backup_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    result = payload.get('result')
+    if isinstance(result, dict):
+        return result
+    return payload
+
+
+def web_backup_items_from_payload(payload: Dict[str, Any]) -> List[Dict[str, str]]:
+    result = web_backup_payload(payload)
+    backups = result.get('backups') if isinstance(result, dict) else []
+    out = []
+    for item in backups or []:
+        if not isinstance(item, dict):
+            continue
+        file_path = str(item.get('file') or '').strip()
+        backup_path = str(item.get('backup') or '').strip()
+        if file_path and backup_path:
+            out.append({'file': file_path, 'backup': backup_path})
+    return out
+
+
+def web_album_label_for_backup(row: sqlite3.Row, payload: Dict[str, Any]) -> str:
+    artist = str(web_row_get(row, 'artist', '') or '').strip()
+    album = str(web_row_get(row, 'album', '') or '').strip()
+    if artist and album:
+        return f'{artist} - {album}'
+    result = web_backup_payload(payload)
+    folder = str(result.get('album_folder') or payload.get('album_folder') or '').rstrip('/')
+    return Path(folder).name if folder else 'Unknown album'
+
+
+def web_list_backup_history(album_key: str = '', limit: Any = 100) -> Dict[str, Any]:
+    try:
+        limit_int = max(1, min(int(limit or 100), 500))
+    except Exception:
+        limit_int = 100
+    actions = ('web_approve_embed', 'web_convert_current', 'embed')
+    args: List[Any] = list(actions)
+    where = f"h.action IN ({','.join('?' for _ in actions)})"
+    if album_key:
+        where += ' AND h.album_key=?'
+        args.append(album_key)
+    args.append(limit_int)
+    with db_connect() as conn:
+        rows = conn.execute(
+            f'''
+            SELECT h.*, a.artist, a.album, a.album_path
+            FROM history h LEFT JOIN albums a ON a.album_key=h.album_key
+            WHERE {where}
+            ORDER BY h.id DESC
+            LIMIT ?
+            ''',
+            args,
+        ).fetchall()
+    items = []
+    for row in rows:
+        payload = web_decode_history_payload(row['payload'])
+        result = web_backup_payload(payload)
+        backups = web_backup_items_from_payload(payload)
+        if not backups:
+            continue
+        first_backup = backups[0].get('backup') or ''
+        backup_dir = str(Path(first_backup).parent) if first_backup else ''
+        missing = 0
+        for item in backups:
+            try:
+                if not Path(item['backup']).is_file():
+                    missing += 1
+            except Exception:
+                missing += 1
+        items.append({
+            'history_id': row['id'],
+            'album_key': row['album_key'] or '',
+            'album_label': web_album_label_for_backup(row, payload),
+            'album_folder': result.get('album_folder') or payload.get('album_folder') or web_row_get(row, 'album_path', '') or '',
+            'created_at': row['created_at'] or '',
+            'action': row['action'] or '',
+            'action_label': 'Approved artwork' if row['action'] == 'web_approve_embed' else ('Converted current artwork' if row['action'] == 'web_convert_current' else 'Embedded artwork'),
+            'updated': int(result.get('updated') or 0),
+            'total': int(result.get('total') or len(backups) or 0),
+            'failed_count': len(result.get('failed') or []),
+            'backup_count': len(backups),
+            'missing_backup_count': missing,
+            'backup_dir': backup_dir,
+            'restorable': bool(backups and missing == 0),
+        })
+    return {'ok': True, 'backups': items, 'count': len(items)}
+
+
+def safe_backup_path(value: str) -> Path:
+    if not value:
+        raise ValueError('Missing backup path')
+    try:
+        path = Path(value).resolve(strict=False)
+    except TypeError:
+        path = Path(value).resolve()
+    root = BACKUP_ROOT.resolve(strict=False)
+    try:
+        path.relative_to(root)
+    except ValueError:
+        raise ValueError(f'Backup path is outside the backup folder: {path}')
+    return path
+
+
+def web_status_from_deep_check(deep: Dict[str, Any]) -> Tuple[str, str]:
+    checked = int((deep or {}).get('checked_files') or 0)
+    summary = deep_check_summary(deep)
+    if checked <= 0:
+        return 'missing_artwork', 'No supported music files were checked after restore.'
+    if deep.get('missing_count') or deep.get('unreadable_count'):
+        return 'missing_artwork', summary or 'Restored backup, but some files still have missing artwork.'
+    if deep.get('incompatible_count'):
+        return 'incompatible_artwork', summary or 'Restored backup, but artwork still needs conversion.'
+    if deep.get('non_square_count'):
+        return 'not_square_artwork', summary or 'Restored backup, but artwork is still not square.'
+    if deep.get('below_target_count'):
+        return 'needs_review', summary or 'Restored backup, but artwork is below target.'
+    return 'already_good', summary or 'Restored backup and verified artwork.'
+
+
+def web_restore_backup_history(history_id: Any, job_id: str = '') -> Dict[str, Any]:
+    row = web_history_row(history_id)
+    if not row:
+        raise ValueError('Backup history entry not found')
+    payload = web_decode_history_payload(row['payload'])
+    backups = web_backup_items_from_payload(payload)
+    if not backups:
+        raise ValueError('This history entry does not contain restorable backups')
+    album_key = str(row['album_key'] or '')
+    restored = 0
+    current_backups = []
+    failed = []
+    for index, item in enumerate(backups, 1):
+        update_job(job_id, label=f'Restoring backup {index}/{len(backups)}')
+        try:
+            target = safe_path(item.get('file') or '')
+            source = safe_backup_path(item.get('backup') or '')
+            if not source.is_file():
+                raise FileNotFoundError(f'Backup file is missing: {source}')
+            if target.exists():
+                current_backups.append({'file': str(target), 'backup': backup_file(target, f'{album_key}_before_restore')})
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            restored += 1
+        except Exception as exc:
+            failed.append({'file': item.get('file') or '', 'error': str(exc)})
+
+    album = web_get_album(album_key) if album_key else None
+    deep: Dict[str, Any] = {}
+    status = ''
+    reason = ''
+    if album and album.get('album_path'):
+        settings = web_get_settings()
+        target_size = web_effective_artwork_target(settings)
+        result = deep_check(
+            safe_path(album.get('album_path') or ''),
+            target_size,
+            problem_files=False,
+            tolerance=target_tolerance(settings.get('target_size_match_mode')),
+        )
+        deep = result.get('deep_file_check') or {}
+        status, reason = web_status_from_deep_check(deep)
+        notes_update = {
+            'status_reason': reason,
+            'deep_file_check': deep,
+            'last_restore': {
+                'from_history_id': int(row['id']),
+                'restored': restored,
+                'failed_count': len(failed),
+                'restored_at': now(),
+            },
+        }
+        with db_connect() as conn:
+            existing = conn.execute('SELECT notes FROM albums WHERE album_key=?', (album_key,)).fetchone()
+            notes = web_decode_notes(existing['notes']) if existing else {}
+            notes.update(notes_update)
+            conn.execute(
+                'UPDATE albums SET status=?, width=?, height=?, example_file=COALESCE(?, example_file), notes=?, last_scanned=? WHERE album_key=?',
+                (
+                    status,
+                    deep.get('example_width') or deep.get('min_width') or album.get('width'),
+                    deep.get('example_height') or deep.get('min_height') or album.get('height'),
+                    deep.get('example_file') or deep.get('first_issue_file') or None,
+                    json.dumps(notes),
+                    now(),
+                    album_key,
+                ),
+            )
+    web_add_history(album_key, 'web_restore_backup', {
+        'from_history_id': int(row['id']),
+        'restored': restored,
+        'failed': failed,
+        'current_backups': current_backups,
+        'deep_file_check': deep,
+        'status': status,
+        'reason': reason,
+    })
+    return {
+        'ok': bool(restored and not failed),
+        'restored': restored,
+        'failed': failed,
+        'current_backups': current_backups,
+        'status': status,
+        'reason': reason,
+        'deep_file_check': deep,
+        'album': web_get_album(album_key) if album_key else None,
+    }
+
+
+def start_web_restore_backup(payload: Dict[str, Any]) -> Dict[str, Any]:
+    history_id = payload.get('history_id')
+    row = web_history_row(history_id)
+    if not row:
+        raise ValueError('Backup history entry not found')
+    payload_data = web_decode_history_payload(row['payload'])
+    result = web_backup_payload(payload_data)
+    album_key = str(row['album_key'] or '')
+    album = web_get_album(album_key) if album_key else None
+    album_folder = str((album or {}).get('album_path') or result.get('album_folder') or '')
+    if not album_folder:
+        raise ValueError('Backup history entry does not include an album folder')
+    job_id, started_mono, _album_folder = begin_job('restore-backup', {
+        'album_folder': album_folder,
+        'album_key': album_key,
+        'artist': (album or {}).get('artist') or '',
+        'album': (album or {}).get('album') or '',
+    })
+
+    def worker() -> None:
+        try:
+            result_payload = web_restore_backup_history(history_id, job_id=job_id)
+            finish_job(job_id, started_mono, bool(result_payload.get('ok')), result=result_payload)
+        except Exception as exc:
+            finish_job(job_id, started_mono, False, error=str(exc))
+
+    threading.Thread(target=worker, name=f'ArtworkManagerRestore-{job_id}', daemon=True).start()
+    return {'ok': True, 'job_id': job_id, 'message': 'Restore started on the NAS.'}
 
 
 def web_set_album_status(album_key: str, status: str, reason: str = '', updates: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -3290,6 +3551,19 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send(404, {'ok': False, 'error': str(exc), 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
             return
+        if route == '/api/backups':
+            if not self._auth_ok():
+                self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            album_key = (params.get('album_key') or [''])[0]
+            limit = (params.get('limit') or ['100'])[0]
+            self._send(200, {
+                **web_list_backup_history(album_key=album_key, limit=limit),
+                'worker_build': WORKER_BUILD,
+                'api': WORKER_API,
+                'worker_api': WORKER_API,
+            })
+            return
         if route == '/api/artwork/current':
             if not self._auth_ok():
                 self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
@@ -3377,6 +3651,10 @@ class Handler(BaseHTTPRequestHandler):
             if route == '/api/album/mark-good':
                 album_key = str(payload.get('album_key') or '').strip()
                 result = web_album_simple_action(album_key, 'already_good', 'Marked good.', 'web_mark_good')
+                self._send(200, result)
+                return
+            if route == '/api/backup/restore':
+                result = start_web_restore_backup(payload)
                 self._send(200, result)
                 return
             if route == '/path-check':
