@@ -76,7 +76,9 @@ const el = {
   prevCandidateBtn: document.getElementById("prevCandidateBtn"),
   nextCandidateBtn: document.getElementById("nextCandidateBtn"),
   rejectCandidateBtn: document.getElementById("rejectCandidateBtn"),
+  rejectAllBtn: document.getElementById("rejectAllBtn"),
   importImageBtn: document.getElementById("importImageBtn"),
+  recheckAlbumBtn: document.getElementById("recheckAlbumBtn"),
   openSourceBtn: document.getElementById("openSourceBtn"),
   googleImagesBtn: document.getElementById("googleImagesBtn"),
   markGoodBtn: document.getElementById("markGoodBtn"),
@@ -805,7 +807,7 @@ function updateActionButtons() {
   const sourceUrl = candidate?.source_page || candidate?.source_url || "";
   const hasAlbum = Boolean(album);
   const canNavigateCandidates = hasAlbum && state.candidates.length > 1 && !busy;
-  const showCandidateActions = hasCandidate || mode === "review";
+  const showCandidateActions = hasCandidate;
   const showAlbumTools = hasAlbum && (sourceUrl || mode !== "empty");
   const compactCandidate = (mode === "done" || mode === "empty") && !hasCandidate;
   const canConvertCurrent = hasAlbum && ["incompatible_artwork", "not_square_artwork"].includes(album.status);
@@ -828,8 +830,10 @@ function updateActionButtons() {
   setVisible(el.prevCandidateBtn, state.candidates.length > 1);
   setVisible(el.nextCandidateBtn, state.candidates.length > 1);
   setVisible(el.rejectCandidateBtn, hasCandidate);
+  setVisible(el.rejectAllBtn, hasCandidate && state.candidates.length > 1);
   setVisible(el.quietActionRow, showAlbumTools);
   setVisible(el.importImageBtn, hasAlbum);
+  setVisible(el.recheckAlbumBtn, hasAlbum);
   setVisible(el.openSourceBtn, Boolean(sourceUrl));
   setVisible(el.googleImagesBtn, hasAlbum);
   setVisible(el.markGoodBtn, hasAlbum && mode !== "done");
@@ -841,7 +845,9 @@ function updateActionButtons() {
   el.prevCandidateBtn.disabled = !canNavigateCandidates;
   el.nextCandidateBtn.disabled = !canNavigateCandidates;
   el.rejectCandidateBtn.disabled = !album || !hasCandidate || busy;
+  el.rejectAllBtn.disabled = !album || !hasCandidate || busy;
   el.importImageBtn.disabled = !album || busy;
+  el.recheckAlbumBtn.disabled = !album || busy;
   el.openSourceBtn.disabled = !sourceUrl;
   el.googleImagesBtn.disabled = !album;
   el.markGoodBtn.disabled = !album || busy;
@@ -1362,6 +1368,9 @@ async function rejectSelectedCandidate() {
   const album = selectedAlbum();
   const candidate = selectedCandidate();
   if (!album || !candidate) return;
+  state.actionActive = true;
+  el.actionMessage.textContent = "Rejecting this cover option...";
+  updateActionButtons();
   try {
     await api("/api/artwork/reject", {
       method: "POST",
@@ -1369,23 +1378,62 @@ async function rejectSelectedCandidate() {
     });
     await refreshQueue({ autoHandoff: true });
     await refreshCandidates(selectedAlbum());
+    el.actionMessage.textContent = "Rejected cover option.";
   } catch (error) {
     el.actionMessage.textContent = error.message || "Candidate could not be rejected.";
+  } finally {
+    state.actionActive = false;
+    updateActionButtons();
   }
 }
 
-async function runAlbumAction(path, message) {
+async function rejectAllCandidates() {
+  const album = selectedAlbum();
+  if (!album || !state.candidates.length) return;
+  const count = state.candidates.length;
+  const confirmed = window.confirm(`Reject all ${count} saved cover option${count === 1 ? "" : "s"} for ${album.artist} - ${album.album}?`);
+  if (!confirmed) return;
+  state.actionActive = true;
+  el.actionMessage.textContent = "Rejecting saved cover options...";
+  updateActionButtons();
+  try {
+    await api("/api/artwork/reject-all", {
+      method: "POST",
+      body: JSON.stringify({ album_key: album.album_key }),
+    });
+    state.candidates = [];
+    state.candidateIndex = 0;
+    renderCandidate();
+    await refreshQueue({ force: true, autoHandoff: true });
+    await refreshCandidates(selectedAlbum());
+    el.actionMessage.textContent = "Rejected saved cover options.";
+  } catch (error) {
+    el.actionMessage.textContent = error.message || "Saved cover options could not be rejected.";
+  } finally {
+    state.actionActive = false;
+    updateActionButtons();
+  }
+}
+
+async function runAlbumAction(path, message, options = {}) {
   const album = selectedAlbum();
   if (!album) return;
+  state.actionActive = true;
+  el.actionMessage.textContent = options.start || "Working on this album...";
+  updateActionButtons();
   try {
     await api(path, {
       method: "POST",
       body: JSON.stringify({ album_key: album.album_key }),
     });
     el.actionMessage.textContent = message;
-    await refreshQueue({ autoHandoff: true });
+    await refreshQueue({ force: true, autoHandoff: true });
+    await refreshCandidates(selectedAlbum());
   } catch (error) {
     el.actionMessage.textContent = error.message || "Action failed.";
+  } finally {
+    state.actionActive = false;
+    updateActionButtons();
   }
 }
 
@@ -1507,10 +1555,12 @@ function bind() {
   el.approveEmbedBtn.addEventListener("click", approveSelectedCandidate);
   el.convertCurrentBtn.addEventListener("click", convertCurrentArtwork);
   el.rejectCandidateBtn.addEventListener("click", rejectSelectedCandidate);
+  el.rejectAllBtn.addEventListener("click", rejectAllCandidates);
   el.prevCandidateBtn.addEventListener("click", () => moveCandidate(-1));
   el.nextCandidateBtn.addEventListener("click", () => moveCandidate(1));
   el.importImageBtn.addEventListener("click", openImportImagePicker);
   el.importImageInput.addEventListener("change", () => importSelectedImage(el.importImageInput.files?.[0]));
+  el.recheckAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/recheck", "Rechecked album.", { start: "Rechecking this album..." }));
   el.openSourceBtn.addEventListener("click", openSourcePage);
   el.googleImagesBtn.addEventListener("click", openGoogleImages);
   el.markGoodBtn.addEventListener("click", () => runAlbumAction("/api/album/mark-good", "Marked as good."));

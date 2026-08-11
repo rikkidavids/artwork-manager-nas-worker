@@ -36,8 +36,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.32'
-APP_BUILD = '5.32'
+WORKER_BUILD = '5.33'
+APP_BUILD = '5.33'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -46,7 +46,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.32 adds web diagnostics and queue maintenance.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.33 adds selected-album recheck and reject-all web actions.'
 )
 
 
@@ -259,7 +259,7 @@ def status_payload(public: bool = False) -> Dict[str, Any]:
             'GET /api/artwork/current', 'GET /api/artwork/candidate', 'GET /api/backups',
             'POST /api/settings', 'POST /api/scan/start', 'POST /api/library/clear', 'POST /api/artwork/search',
             'POST /api/artwork/import', 'POST /api/artwork/approve', 'POST /api/artwork/convert-current',
-            'POST /api/artwork/reject', 'POST /api/album/skip',
+            'POST /api/artwork/reject', 'POST /api/artwork/reject-all', 'POST /api/album/recheck', 'POST /api/album/skip',
             'POST /api/album/mark-good', 'POST /api/backup/restore',
             'POST /api/maintenance/clean-stale-candidates', 'POST /api/maintenance/repair-queue',
             'POST /scan-library', 'POST /embed', 'POST /deep-check',
@@ -1357,6 +1357,26 @@ def web_recheck_album_row(row: sqlite3.Row, settings: Dict[str, Any]) -> Dict[st
         'reason': reason,
         'changed': bool(changed),
         'checked_files': deep.get('checked_files') or 0,
+    }
+
+
+def web_recheck_album(album_key: str) -> Dict[str, Any]:
+    album_key = str(album_key or '').strip()
+    if not album_key:
+        raise ValueError('Missing album key')
+    web_block_if_busy('album recheck')
+    settings = web_get_settings()
+    with db_connect() as conn:
+        row = conn.execute('SELECT * FROM albums WHERE album_key=?', (album_key,)).fetchone()
+    if not row:
+        raise ValueError('Album not found')
+    result = web_recheck_album_row(row, settings)
+    web_add_history(album_key, 'web_recheck_album', result)
+    return {
+        'ok': True,
+        'result': result,
+        'album': web_get_album(album_key),
+        'counts': web_queue_counts(settings),
     }
 
 
@@ -2837,6 +2857,45 @@ def web_reject_candidate(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {'ok': True, 'remaining_candidates': remaining, 'candidates': [web_public_candidate(c) for c in web_list_candidates(album_key)]}
 
 
+def web_reject_all_candidates(payload: Dict[str, Any]) -> Dict[str, Any]:
+    album_key = str(payload.get('album_key') or '').strip()
+    if not album_key:
+        raise ValueError('Missing album key')
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    web_block_if_busy('rejecting saved artwork options')
+    stamp = now()
+    reason = 'Rejected in web app'
+    with db_connect() as conn:
+        row = conn.execute(
+            'SELECT COUNT(*) AS n FROM candidates WHERE album_key=? AND approved=0 AND rejected=0',
+            (album_key,),
+        ).fetchone()
+        rejected = int(row['n'] if row else 0)
+        if rejected:
+            conn.execute(
+                '''
+                UPDATE candidates
+                SET approved=0, rejected=1, candidate_state='rejected', state_reason=?, state_updated_at=?
+                WHERE album_key=? AND approved=0 AND rejected=0
+                ''',
+                (reason, stamp, album_key),
+            )
+    recheck: Dict[str, Any] = {}
+    if rejected or str(album.get('stored_status') or '') == 'candidate_found':
+        recheck = web_recheck_album(album_key)
+    web_add_history(album_key, 'web_reject_all_candidates', {'rejected': rejected})
+    return {
+        'ok': True,
+        'rejected': rejected,
+        'album': web_get_album(album_key),
+        'counts': web_queue_counts(),
+        'candidates': [web_public_candidate(c) for c in web_list_candidates(album_key)],
+        'recheck': recheck.get('result') if isinstance(recheck, dict) else {},
+    }
+
+
 def web_album_simple_action(album_key: str, status: str, reason: str, action: str) -> Dict[str, Any]:
     album = web_get_album(album_key)
     if not album:
@@ -3939,6 +3998,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if route == '/api/artwork/reject':
                 result = web_reject_candidate(payload)
+                self._send(200, result)
+                return
+            if route == '/api/artwork/reject-all':
+                result = web_reject_all_candidates(payload)
+                self._send(200, result)
+                return
+            if route == '/api/album/recheck':
+                album_key = str(payload.get('album_key') or '').strip()
+                result = web_recheck_album(album_key)
                 self._send(200, result)
                 return
             if route == '/api/album/skip':

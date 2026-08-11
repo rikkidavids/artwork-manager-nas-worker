@@ -2,7 +2,7 @@
 
 NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.32**
+Current worker build: **5.33**
 Worker API: **5**
 
 ## Why This Repo Exists
@@ -17,7 +17,7 @@ Synology Container Manager can then update the worker like a normal container im
 
 The publishing workflow template is included at `github-actions/docker-image.yml`. To activate image publishing, copy that file to `.github/workflows/docker-image.yml` in GitHub or push it from a Git token with `workflow` scope.
 
-Build 5.32 adds web diagnostics and Maintenance tools for cleaning stale saved artwork options and repairing queue status after setting or file changes.
+Build 5.33 adds selected-album actions for rechecking one album against the current settings and rejecting all saved replacement covers in one go.
 
 ## Web App Function Plan
 
