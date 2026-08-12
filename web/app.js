@@ -106,6 +106,7 @@ const el = {
   settingBackupEmbed: document.getElementById("settingBackupEmbed"),
   settingDeezerEnabled: document.getElementById("settingDeezerEnabled"),
   settingItunesEnabled: document.getElementById("settingItunesEnabled"),
+  settingMusicbrainzEnabled: document.getElementById("settingMusicbrainzEnabled"),
   settingMaxCandidates: document.getElementById("settingMaxCandidates"),
   settingProviderWorkers: document.getElementById("settingProviderWorkers"),
   settingToken: document.getElementById("settingToken"),
@@ -655,6 +656,7 @@ function populateSettings(payload = {}) {
   el.settingBackupEmbed.checked = Boolean(settings.backup_before_embed);
   el.settingDeezerEnabled.checked = Boolean(settings.deezer_enabled);
   el.settingItunesEnabled.checked = Boolean(settings.itunes_enabled);
+  el.settingMusicbrainzEnabled.checked = Boolean(settings.musicbrainz_enabled);
   el.settingMaxCandidates.value = settings.max_candidates_per_album || 5;
   el.settingProviderWorkers.value = settings.parallel_provider_workers || 2;
   el.settingToken.value = state.token;
@@ -677,6 +679,7 @@ function readSettingsForm() {
     backup_before_embed: el.settingBackupEmbed.checked,
     deezer_enabled: el.settingDeezerEnabled.checked,
     itunes_enabled: el.settingItunesEnabled.checked,
+    musicbrainz_enabled: el.settingMusicbrainzEnabled.checked,
     max_candidates_per_album: Number(el.settingMaxCandidates.value || 5),
     parallel_provider_workers: Number(el.settingProviderWorkers.value || 2),
   };

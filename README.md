@@ -2,7 +2,7 @@
 
 NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.33**
+Current worker build: **5.34**
 Worker API: **5**
 
 ## Why This Repo Exists
@@ -17,13 +17,13 @@ Synology Container Manager can then update the worker like a normal container im
 
 The publishing workflow template is included at `github-actions/docker-image.yml`. To activate image publishing, copy that file to `.github/workflows/docker-image.yml` in GitHub or push it from a Git token with `workflow` scope.
 
-Build 5.33 adds selected-album actions for rechecking one album against the current settings and rejecting all saved replacement covers in one go.
+Build 5.34 adds MusicBrainz/Cover Art Archive as a web artwork search source, enabled alongside Deezer and Apple/iTunes.
 
 ## Web App Function Plan
 
 - **Queue:** scan the library, skip unchanged folders, filter by All / Needs Work / Review / Done, search the queue, show saved candidate counts, and keep the selected album stable while scans run.
 - **Review:** compare current artwork with a candidate, search providers, cycle candidates, approve/embed, reject poor options, skip albums, mark existing artwork good, and open Google Images or the source page when manual checking is needed.
-- **Artwork Sources:** Deezer and Apple/iTunes are built in first because they are fast and need no account. Browser image upload is included, with MusicBrainz, Discogs, fanart.tv, and manual URL import still good candidates for later.
+- **Artwork Sources:** Deezer, Apple/iTunes, and MusicBrainz/Cover Art Archive are built in because they are fast/free and need no user account. Browser image upload is included, with Discogs, fanart.tv, and manual URL import still good candidates for later.
 - **Library Maintenance:** repair queue states against current artwork rules, clean stale saved artwork options, run deep checks, convert/save current embedded artwork, show problem files, clear and rebuild the local database, and export diagnostics from the web UI.
 - **Safety:** keep token access, optional backups before embed, folder-cover saving, clear history, and eventually one-click restore.
 - **Clean UI Direction:** keep the queue-left/review-right workbench, avoid dashboard clutter, put counts only where they help decisions, and keep advanced tools behind settings or a simple album tools menu.

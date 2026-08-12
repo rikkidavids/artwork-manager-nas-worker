@@ -27,8 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-from urllib.parse import parse_qs, unquote, urlparse
-from urllib.parse import quote_plus
+from urllib.parse import parse_qs, quote, quote_plus, unquote, urlparse
 
 import requests
 from PIL import Image, ImageOps
@@ -36,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.33'
-APP_BUILD = '5.33'
+WORKER_BUILD = '5.34'
+APP_BUILD = '5.34'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -46,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.33 adds selected-album recheck and reject-all web actions.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.34 adds MusicBrainz/Cover Art Archive artwork search.'
 )
 
 
@@ -816,6 +815,7 @@ def web_default_settings() -> Dict[str, Any]:
         'parallel_provider_workers': web_int(os.environ.get('AMW_PROVIDER_WORKERS') or 2, 2, 1, 4),
         'deezer_enabled': web_bool(os.environ.get('AMW_DEEZER_ENABLED'), True),
         'itunes_enabled': web_bool(os.environ.get('AMW_ITUNES_ENABLED'), True),
+        'musicbrainz_enabled': web_bool(os.environ.get('AMW_MUSICBRAINZ_ENABLED'), True),
         'theme_mode': os.environ.get('AMW_THEME_MODE') or 'Auto',
     }
 
@@ -848,6 +848,7 @@ def web_get_settings() -> Dict[str, Any]:
     settings['parallel_provider_workers'] = web_int(settings.get('parallel_provider_workers'), 2, 1, 4)
     settings['deezer_enabled'] = web_bool(settings.get('deezer_enabled'), True)
     settings['itunes_enabled'] = web_bool(settings.get('itunes_enabled'), True)
+    settings['musicbrainz_enabled'] = web_bool(settings.get('musicbrainz_enabled'), True)
     theme = str(settings.get('theme_mode') or 'Auto').strip().lower()
     settings['theme_mode'] = {'light': 'Light', 'dark': 'Dark', 'auto': 'Auto'}.get(theme, 'Auto')
     return settings
@@ -871,6 +872,7 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
         'parallel_provider_workers',
         'deezer_enabled',
         'itunes_enabled',
+        'musicbrainz_enabled',
         'theme_mode',
     }
     for key in allowed:
@@ -892,6 +894,7 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
     current['parallel_provider_workers'] = web_int(current.get('parallel_provider_workers'), 2, 1, 4)
     current['deezer_enabled'] = web_bool(current.get('deezer_enabled'), True)
     current['itunes_enabled'] = web_bool(current.get('itunes_enabled'), True)
+    current['musicbrainz_enabled'] = web_bool(current.get('musicbrainz_enabled'), True)
     theme = str(current.get('theme_mode') or 'Auto').strip().lower()
     current['theme_mode'] = {'light': 'Light', 'dark': 'Dark', 'auto': 'Auto'}.get(theme, 'Auto')
     with db_connect() as conn:
@@ -2543,6 +2546,235 @@ def web_itunes_candidates(album: Dict[str, Any], max_candidates: int, settings: 
     return out
 
 
+def web_mb_artist_name(release: Dict[str, Any]) -> str:
+    try:
+        credits = release.get('artist-credit') or []
+        names = [str(item.get('artist', {}).get('name') or '').strip() for item in credits if isinstance(item, dict)]
+        return ' / '.join(name for name in names if name)
+    except Exception:
+        return ''
+
+
+def web_mb_artist_variants(artist: Any) -> List[str]:
+    raw = ' '.join(str(artist or '').split())
+    if not raw:
+        return []
+    values = [
+        raw,
+        re.sub(r'["“”‘’][^"“”‘’]+["“”‘’]', ' ', raw),
+        re.sub(r'\([^)]*\)', ' ', raw),
+        re.sub(r'\[[^\]]*\]', ' ', raw),
+    ]
+    words = raw.split()
+    if len(words) >= 3:
+        values.append(f'{words[0]} {words[-1]}')
+    out = []
+    seen = set()
+    for value in values:
+        value = ' '.join(str(value or '').split())
+        key = normalize_for_match(value)
+        if value and key and key not in seen:
+            out.append(value)
+            seen.add(key)
+    return out
+
+
+def web_mb_artist_strength(found: Any, wanted: Any) -> int:
+    found_n = normalize_for_match(str(found or ''))
+    if not wanted:
+        return 2
+    if not found_n:
+        return 0
+    best = 0
+    for variant in web_mb_artist_variants(wanted) or [str(wanted or '')]:
+        want_n = normalize_for_match(variant)
+        if not want_n:
+            continue
+        if found_n == want_n:
+            best = max(best, 3)
+        elif want_n in found_n or found_n in want_n:
+            best = max(best, 2)
+        elif web_word_set(want_n) and web_word_set(want_n).issubset(web_word_set(found_n)):
+            best = max(best, 2)
+    return best
+
+
+def web_mb_title_matches(found: Any, wanted: Any) -> bool:
+    found_n = normalize_for_match(clean_album_name(str(found or '')))
+    wanted_n = normalize_for_match(clean_album_name(str(wanted or '')))
+    if not wanted_n:
+        return True
+    if not found_n:
+        return False
+    if found_n == wanted_n:
+        return True
+    return bool(len(wanted_n) >= 6 and (wanted_n in found_n or found_n in wanted_n))
+
+
+def web_mb_release_matches(release: Dict[str, Any], artist: Any, title: Any, year: Any = '') -> bool:
+    title_ok = web_mb_title_matches(release.get('title') or '', title)
+    artist_strength = web_mb_artist_strength(web_mb_artist_name(release), artist)
+    if not (title_ok and artist_strength):
+        return False
+    release_year = str(release.get('date') or '')[:4]
+    if web_year_matches(release_year, year):
+        return True
+    exact_title = normalize_for_match(clean_album_name(str(release.get('title') or ''))) == normalize_for_match(clean_album_name(str(title or '')))
+    return bool(exact_title and artist_strength >= 2)
+
+
+def web_mb_release_score(release: Dict[str, Any], artist: Any, title: Any, year: Any = '') -> int:
+    try:
+        score = int(release.get('score') or 0)
+    except Exception:
+        score = 0
+    mb_title = normalize_for_match(str(release.get('title') or ''))
+    wanted_title = normalize_for_match(clean_album_name(str(title or '')))
+    if mb_title == wanted_title:
+        score += 80
+    elif wanted_title and wanted_title in mb_title:
+        score += 35
+    strength = web_mb_artist_strength(web_mb_artist_name(release), artist)
+    score += {3: 65, 2: 42, 1: 25}.get(strength, 0)
+    release_year = str(release.get('date') or '')[:4]
+    if year and release_year:
+        score += 20 if release_year == str(year) else -8
+    if str(release.get('status') or '').lower() == 'official':
+        score += 4
+    return score
+
+
+def web_mb_search_releases(session: requests.Session, artist: Any, title: Any, year: Any = '', limit: int = 12) -> List[Dict[str, Any]]:
+    clean_title = clean_album_name(str(title or ''))
+    queries: List[str] = []
+
+    def add_query(value: str) -> None:
+        if value and value not in queries:
+            queries.append(value)
+
+    for variant in web_mb_artist_variants(artist) or ([str(artist or '')] if artist else []):
+        if clean_title and year:
+            add_query(f'artist:"{variant}" AND release:"{clean_title}" AND date:{year}')
+        if clean_title:
+            add_query(f'artist:"{variant}" AND release:"{clean_title}"')
+    if not artist and clean_title:
+        if year:
+            add_query(f'release:"{clean_title}" AND date:{year}')
+        add_query(f'release:"{clean_title}"')
+
+    releases = []
+    seen_ids = set()
+    for query in queries:
+        data = web_http_json(session, f'https://musicbrainz.org/ws/2/release/?query={quote(query)}&fmt=json&limit={int(limit)}')
+        for release in (data or {}).get('releases') or []:
+            mbid = release.get('id')
+            if not mbid or mbid in seen_ids:
+                continue
+            if not web_mb_release_matches(release, artist, clean_title, year):
+                continue
+            release['_local_score'] = web_mb_release_score(release, artist, clean_title, year)
+            releases.append(release)
+            seen_ids.add(mbid)
+        time.sleep(0.2)
+    releases.sort(key=lambda item: int(item.get('_local_score') or 0), reverse=True)
+    return releases[:limit]
+
+
+def web_mb_fetch_release(session: requests.Session, mbid: Any) -> Dict[str, Any] | None:
+    mbid = str(mbid or '').strip()
+    if not mbid:
+        return None
+    data = web_http_json(session, f'https://musicbrainz.org/ws/2/release/{quote(mbid)}?inc=artist-credits+recordings&fmt=json', timeout=15)
+    if isinstance(data, dict) and data.get('id'):
+        data['_local_score'] = 9999
+        return data
+    return None
+
+
+def web_mb_release_candidates(
+    session: requests.Session,
+    album: Dict[str, Any],
+    release: Dict[str, Any],
+    max_candidates: int,
+    settings: Dict[str, Any],
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    mbid = str(release.get('id') or '').strip()
+    if not mbid:
+        return []
+    data = web_http_json(session, f'https://coverartarchive.org/release/{quote(mbid)}', timeout=15)
+    images = (data or {}).get('images') if isinstance(data, dict) else []
+    fronts = [item for item in (images or []) if isinstance(item, dict) and item.get('front') is True] or [item for item in (images or []) if isinstance(item, dict)]
+    out: List[Dict[str, Any]] = []
+    seen_urls = set()
+    release_title = str(release.get('title') or album.get('album') or '')
+    release_year = str(release.get('date') or '')[:4]
+    for image in fronts:
+        thumbs = image.get('thumbnails') or {}
+        url_options = [
+            ('Original', image.get('image') or ''),
+            ('1200px thumbnail', thumbs.get('1200') or ''),
+            ('500px thumbnail', thumbs.get('500') or ''),
+            ('Large thumbnail', thumbs.get('large') or ''),
+        ]
+        for detail, image_url in url_options:
+            if len(out) >= max_candidates:
+                return out
+            if not image_url or image_url in seen_urls:
+                continue
+            seen_urls.add(image_url)
+            cand = web_download_candidate_image(
+                session,
+                album,
+                'MusicBrainz',
+                detail,
+                image_url,
+                release_title + (f' ({release_year})' if release_year else ''),
+                mbid,
+                {
+                    'source_artist': web_mb_artist_name(release),
+                    'source_title': release_title,
+                    'source_year': release_year,
+                    'release_date': release.get('date') or '',
+                    'country': release.get('country') or '',
+                    'status': release.get('status') or '',
+                    'packaging': release.get('packaging') or '',
+                    'track_count': sum(len(media.get('tracks') or []) for media in (release.get('media') or []) if isinstance(media, dict)),
+                    'source_page': f'https://musicbrainz.org/release/{mbid}',
+                },
+                settings,
+                offset + len(out) + 1,
+            )
+            if cand:
+                out.append(cand)
+    return out
+
+
+def web_musicbrainz_candidates(album: Dict[str, Any], max_candidates: int, settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    session = requests.Session()
+    session.headers.update({'User-Agent': f'ArtworkManagerNAS/{WORKER_BUILD} ( https://github.com/rikkidavids/artwork-manager-nas-worker )', 'Accept': 'application/json'})
+    artist = album.get('search_artist') or album.get('artist') or ''
+    title = album.get('search_album') or album.get('album') or ''
+    year = album.get('year') or ''
+    releases: List[Dict[str, Any]] = []
+    direct_mbid = str(album.get('mb_release_id') or '').strip()
+    if direct_mbid:
+        release = web_mb_fetch_release(session, direct_mbid)
+        if release:
+            releases.append(release)
+    known = {release.get('id') for release in releases if release.get('id')}
+    for release in web_mb_search_releases(session, artist, title, year=year, limit=12):
+        if release.get('id') not in known:
+            releases.append(release)
+            known.add(release.get('id'))
+    out: List[Dict[str, Any]] = []
+    for release in releases:
+        if len(out) >= max_candidates:
+            break
+        out.extend(web_mb_release_candidates(session, album, release, max_candidates - len(out), settings, offset=len(out)))
+    return out[:max_candidates]
+
+
 def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job_id: str = '') -> Dict[str, Any]:
     album = web_get_album(album_key)
     if not album:
@@ -2553,7 +2785,7 @@ def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job
     if len(existing) >= target_total:
         web_set_album_status(album_key, 'candidate_found', f'{len(existing)} artwork option(s) ready.')
         return {'ok': True, 'candidate_count': len(existing), 'candidates': [web_public_candidate(c) for c in existing]}
-    web_set_album_status(album_key, 'searching', 'Searching Deezer and Apple artwork.')
+    web_set_album_status(album_key, 'searching', 'Searching artwork providers.')
     update_job(job_id, label=f"Searching {album.get('artist')} — {album.get('album')}", candidate_count=len(existing))
 
     providers = []
@@ -2561,6 +2793,8 @@ def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job
         providers.append(('Deezer', web_deezer_candidates))
     if web_bool(settings.get('itunes_enabled'), True):
         providers.append(('iTunes', web_itunes_candidates))
+    if web_bool(settings.get('musicbrainz_enabled'), True):
+        providers.append(('MusicBrainz', web_musicbrainz_candidates))
     if not providers:
         web_set_album_status(album_key, 'no_candidate', 'No artwork providers are enabled.')
         return {'ok': True, 'candidate_count': len(existing), 'candidates': [web_public_candidate(c) for c in existing], 'message': 'No artwork providers are enabled.'}
