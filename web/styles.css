@@ -215,6 +215,7 @@ input[readonly] {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
   min-height: 0;
 }
 
@@ -1260,10 +1261,34 @@ tbody tr.selected {
     min-width: 0;
   }
 
+  .topbar {
+    min-height: 52px;
+    gap: 12px;
+    padding: 0 12px;
+  }
+
+  .brand-mark {
+    width: 32px;
+    height: 32px;
+  }
+
+  .app-title p {
+    font-size: 12px;
+  }
+
+  .top-actions {
+    gap: 6px;
+  }
+
+  .top-actions button {
+    height: 32px;
+    padding: 0 10px;
+  }
+
   .workspace {
     grid-template-columns: minmax(360px, 0.82fr) minmax(440px, 1fr);
-    gap: 10px;
-    padding: 10px;
+    gap: 8px;
+    padding: 8px;
   }
 
   .queue-pane,
@@ -1272,7 +1297,7 @@ tbody tr.selected {
   }
 
   .detail-pane {
-    --cover-slot: clamp(205px, 25vw, 285px);
+    --cover-slot: clamp(190px, 24vw, 260px);
   }
 
   .review-grid {
@@ -1280,12 +1305,150 @@ tbody tr.selected {
   }
 
   .review-bottom {
-    grid-template-columns: 1fr;
+    min-height: 130px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.92fr);
   }
 
   .settings-window {
     grid-template-columns: 190px minmax(0, 1fr);
     width: calc(100vw - 28px);
+  }
+}
+
+@media (min-width: 741px) and (max-height: 820px) {
+  body {
+    font-size: 12px;
+  }
+
+  .topbar {
+    min-height: 46px;
+    padding: 0 10px;
+  }
+
+  .brand-mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    font-size: 11px;
+  }
+
+  h1,
+  h2 {
+    font-size: 16px;
+  }
+
+  h3 {
+    font-size: 14px;
+  }
+
+  button {
+    height: 30px;
+    padding: 0 10px;
+  }
+
+  .workspace {
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .queue-pane,
+  .detail-pane {
+    padding: 8px;
+  }
+
+  .detail-pane {
+    --cover-slot: clamp(160px, 24vh, 225px);
+    gap: 7px;
+  }
+
+  .pane-head,
+  .detail-head {
+    margin-bottom: 7px;
+  }
+
+  .queue-controls {
+    grid-template-rows: 28px 28px;
+    gap: 6px;
+    min-height: 62px;
+    margin-bottom: 8px;
+  }
+
+  .search-row,
+  .search,
+  .clear-search {
+    height: 28px;
+    min-height: 28px;
+  }
+
+  .search {
+    max-height: 28px;
+    line-height: 28px;
+  }
+
+  .chip {
+    height: 26px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+
+  th,
+  td {
+    height: 25px;
+    padding: 0 6px;
+  }
+
+  .art-panel,
+  .notes-panel,
+  .actions-panel {
+    padding: 8px;
+  }
+
+  .art-panel {
+    min-height: calc(var(--cover-slot) + 50px);
+  }
+
+  .cover-box {
+    margin: 3px auto;
+  }
+
+  #coverMeta,
+  #candidateMeta {
+    flex-basis: 24px;
+    min-height: 24px;
+    -webkit-line-clamp: 1;
+  }
+
+  .review-bottom {
+    min-height: 112px;
+    margin-top: 7px;
+  }
+
+  .actions-panel p {
+    min-height: 0;
+    margin: 4px 0 7px;
+  }
+
+  .summary-lead {
+    margin-top: 6px;
+    padding: 7px 9px;
+  }
+
+  .summary-meta {
+    gap: 6px;
+    margin-top: 7px;
+  }
+
+  .summary-meta span {
+    padding: 4px 8px;
+  }
+
+  .action-row {
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .primary-actions button {
+    min-width: 118px;
   }
 }
 
@@ -1378,6 +1541,7 @@ tbody tr.selected {
 
 @media (max-width: 740px) {
   body {
+    font-size: 12px;
     overflow: hidden;
   }
 
@@ -1390,27 +1554,28 @@ tbody tr.selected {
     align-items: flex-start;
     flex-direction: column;
     min-height: 0;
-    gap: 10px;
-    padding: 10px;
+    gap: 8px;
+    padding: 8px;
   }
 
   .app-title {
     width: 100%;
+    gap: 8px;
   }
 
   .brand-mark {
-    width: 30px;
-    height: 30px;
+    width: 28px;
+    height: 28px;
     border-radius: 8px;
     font-size: 11px;
   }
 
   h1 {
-    font-size: 17px;
+    font-size: 16px;
   }
 
   h2 {
-    font-size: 17px;
+    font-size: 16px;
   }
 
   h3 {
@@ -1418,8 +1583,9 @@ tbody tr.selected {
   }
 
   button {
-    height: 36px;
-    padding: 0 10px;
+    height: 32px;
+    padding: 0 9px;
+    font-size: 12px;
   }
 
   .top-actions button {
@@ -1427,8 +1593,10 @@ tbody tr.selected {
   }
 
   .top-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     width: 100%;
-    flex-wrap: wrap;
+    gap: 6px;
   }
 
   .unlock-panel,
@@ -1445,7 +1613,8 @@ tbody tr.selected {
     display: block;
     flex: 1 1 auto;
     min-height: 0;
-    padding: 8px;
+    padding: 6px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
     overflow: hidden;
   }
 
@@ -1456,8 +1625,8 @@ tbody tr.selected {
   }
 
   .detail-pane {
-    --cover-slot: min(calc(100vw - 56px), 360px);
-    gap: 8px;
+    --cover-slot: min(calc(100vw - 78px), 300px);
+    gap: 7px;
   }
 
   body.detail-open .queue-pane {
@@ -1488,29 +1657,34 @@ tbody tr.selected {
   }
 
   .status-pill {
-    padding: 5px 8px;
+    padding: 4px 8px;
+    font-size: 12px;
   }
 
   .queue-controls {
-    grid-template-rows: 34px 34px;
-    min-height: 76px;
+    grid-template-rows: 30px 30px;
+    gap: 6px;
+    min-height: 66px;
+    margin-bottom: 8px;
   }
 
   .search {
-    height: 34px;
-    min-height: 34px;
-    max-height: 34px;
-    line-height: 34px;
+    height: 30px;
+    min-height: 30px;
+    max-height: 30px;
+    line-height: 30px;
   }
 
   .search-row,
   .clear-search {
-    height: 34px;
-    min-height: 34px;
+    height: 30px;
+    min-height: 30px;
   }
 
   .chip {
-    height: 32px;
+    height: 30px;
+    padding: 0 8px;
+    font-size: 12px;
   }
 
   .table-wrap {
@@ -1519,8 +1693,9 @@ tbody tr.selected {
 
   th,
   td {
-    height: 34px;
+    height: 31px;
     padding: 0 6px;
+    font-size: 12px;
   }
 
   th:nth-child(1),
@@ -1553,12 +1728,48 @@ tbody tr.selected {
   }
 
   .cover-box {
-    width: min(100%, calc(100vw - 56px));
-    margin: 8px auto 6px;
+    width: min(100%, var(--cover-slot));
+    margin: 6px auto 4px;
   }
 
   #candidatePanel.compact {
-    min-height: calc(var(--cover-slot) + 74px);
+    min-height: 0;
+  }
+
+  #candidatePanel.compact .cover-box {
+    display: none;
+  }
+
+  #candidatePanel.compact #candidateMeta {
+    flex-basis: auto;
+    min-height: 0;
+    margin-top: 6px;
+  }
+
+  #coverMeta,
+  #candidateMeta {
+    flex-basis: 24px;
+    min-height: 24px;
+    -webkit-line-clamp: 1;
+    font-size: 12px;
+  }
+
+  .art-panel {
+    min-height: calc(var(--cover-slot) + 52px);
+  }
+
+  .summary-lead {
+    margin-top: 6px;
+    padding: 7px 9px;
+  }
+
+  .summary-meta span {
+    padding: 4px 8px;
+  }
+
+  .actions-panel p {
+    min-height: 0;
+    margin: 4px 0 8px;
   }
 
   .actions-panel {
