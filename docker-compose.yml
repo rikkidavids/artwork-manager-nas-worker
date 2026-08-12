@@ -3,6 +3,8 @@ services:
     image: ghcr.io/rikkidavids/artwork-manager-nas-worker:${AMW_IMAGE_TAG:-latest}
     container_name: artwork-manager-worker
     restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.enable: "${AMW_AUTO_UPDATE:-true}"
     ports:
       - "${AMW_HOST_PORT:-8765}:8765"
     environment:

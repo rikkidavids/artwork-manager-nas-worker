@@ -2,7 +2,7 @@
 
 NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.35**
+Current worker build: **5.36**
 Worker API: **5**
 
 ## Why This Repo Exists
@@ -17,7 +17,7 @@ Synology Container Manager can then update the worker like a normal container im
 
 The publishing workflow template is included at `github-actions/docker-image.yml`. To activate image publishing, copy that file to `.github/workflows/docker-image.yml` in GitHub or push it from a Git token with `workflow` scope.
 
-Build 5.35 adds clearer web settings save confirmation, including saved time, saving state, and unsaved-change feedback.
+Build 5.36 marks the app container for existing Watchtower auto-updates, so the NAS can pull new GitHub Container Registry images without a manual update command.
 
 ## Web App Function Plan
 
@@ -58,6 +58,7 @@ AMW_MUSIC_PATH=/volume2/data/media/music
 AMW_BACKUP_PATH=./backups
 AMW_DATA_PATH=./data
 AMW_HOST_PORT=8765
+AMW_AUTO_UPDATE=true
 ```
 
 Then start/update the worker:
@@ -69,13 +70,27 @@ chmod +x update_worker.sh
 
 ## Future Updates
 
+If your NAS already runs Watchtower, Artwork Manager is labelled for auto-updates by default:
+
+```yaml
+com.centurylinklabs.watchtower.enable: "true"
+```
+
+After installing this build once, recreate the Artwork Manager project so the label is applied. If your Watchtower uses label filtering, it will then pick up future `ghcr.io/rikkidavids/artwork-manager-nas-worker:latest` images and recreate this container automatically. If your Watchtower already watches every container, the label is harmless.
+
+To turn this off for Artwork Manager only, set this in `.env`:
+
+```text
+AMW_AUTO_UPDATE=false
+```
+
 From the NAS project folder:
 
 ```sh
 ./update_worker.sh
 ```
 
-That pulls the latest GitHub Container Registry image and recreates the container.
+That manual command remains as a fallback. It pulls the latest GitHub Container Registry image and recreates the container.
 
 You can also update from Synology Container Manager by stopping the project, pulling/updating the image, and starting/rebuilding the project.
 
@@ -90,7 +105,7 @@ http://YOUR-NAS-IP:8765/app/
 Open the plain worker status at `http://YOUR-NAS-IP:8765/` without a browser UI check. You should see:
 
 ```text
-worker_build: "5.30"
+worker_build: "5.36"
 api: 5
 ```
 
