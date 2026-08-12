@@ -923,6 +923,14 @@ tbody tr.selected {
   flex: 1 1 auto;
 }
 
+.artwork-viewer-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.artwork-viewer-actions button,
 .artwork-viewer-head button {
   flex: 0 0 auto;
 }
@@ -946,6 +954,12 @@ tbody tr.selected {
   background: var(--cover-bg);
 }
 
+.artwork-overlay.viewer-actual .artwork-viewer-frame {
+  place-items: start center;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
 .artwork-viewer-frame img {
   display: block;
   width: auto;
@@ -957,6 +971,12 @@ tbody tr.selected {
   object-fit: contain;
   object-position: center;
   border-radius: 8px;
+}
+
+.artwork-overlay.viewer-actual .artwork-viewer-frame img {
+  max-width: none;
+  max-height: none;
+  margin: auto;
 }
 
 .artwork-viewer-nav {

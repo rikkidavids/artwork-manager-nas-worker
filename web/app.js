@@ -21,8 +21,12 @@ const state = {
   tickTimer: 0,
   searchTimer: 0,
   detailOpen: false,
+  preferredNextKey: "",
   viewerOpen: false,
   viewerKind: "",
+  viewerFitMode: "fit",
+  viewerTouchX: 0,
+  viewerTouchY: 0,
   problemKey: "",
   settingsReturnFocus: null,
   viewerReturnFocus: null,
@@ -125,6 +129,8 @@ const el = {
   artworkViewerMeta: document.getElementById("artworkViewerMeta"),
   artworkViewerImage: document.getElementById("artworkViewerImage"),
   artworkViewerNav: document.getElementById("artworkViewerNav"),
+  artworkViewerFrame: document.querySelector(".artwork-viewer-frame"),
+  toggleViewerFitBtn: document.getElementById("toggleViewerFitBtn"),
   closeArtworkViewerBtn: document.getElementById("closeArtworkViewerBtn"),
   viewerPrevBtn: document.getElementById("viewerPrevBtn"),
   viewerNextBtn: document.getElementById("viewerNextBtn"),
@@ -343,6 +349,16 @@ function moveQueueSelection(delta) {
   const next = Math.max(0, Math.min(state.albums.length - 1, (current < 0 ? 0 : current) + delta));
   selectAlbum(state.albums[next].album_key, { openDetail: false, focusQueue: true });
   scrollSelectedIntoView();
+}
+
+function keyAfterSelected() {
+  const index = selectedIndex();
+  if (index < 0) return "";
+  return state.albums[index + 1]?.album_key || state.albums[index - 1]?.album_key || "";
+}
+
+function rememberNextSelection() {
+  state.preferredNextKey = keyAfterSelected();
 }
 
 function idleActionMessage(album = selectedAlbum()) {
@@ -1006,8 +1022,13 @@ async function refreshQueue(options = {}) {
     state.queueSignature = signature;
     setCounts(counts);
     if (!state.albums.find((album) => album.album_key === state.selectedKey)) {
-      state.selectedKey = isPhoneLayout() ? "" : state.albums[0]?.album_key || "";
-      state.detailOpen = false;
+      const preferred = state.preferredNextKey && state.albums.find((album) => album.album_key === state.preferredNextKey);
+      const nextKey = preferred?.album_key || state.albums[0]?.album_key || "";
+      state.selectedKey = nextKey;
+      state.detailOpen = Boolean(nextKey) && isPhoneLayout() && state.detailOpen;
+      state.preferredNextKey = "";
+    } else if (!state.actionActive) {
+      state.preferredNextKey = "";
     }
     if (queueChanged) renderRows();
     if (queueChanged || previousSelected !== state.selectedKey || force) {
@@ -1017,6 +1038,7 @@ async function refreshQueue(options = {}) {
     }
   } catch (error) {
     state.albums = [];
+    state.preferredNextKey = "";
     state.queueSignature = "";
     renderRows();
   }
@@ -1248,6 +1270,7 @@ function renderSelected() {
 
 function selectAlbum(albumKey, options = {}) {
   state.selectedKey = albumKey || "";
+  if (!options.keepPreferred) state.preferredNextKey = "";
   state.detailOpen = options.openDetail === false ? state.detailOpen : Boolean(state.selectedKey);
   renderSelected();
   if (options.focusQueue) focusQueue();
@@ -1335,6 +1358,7 @@ async function approveSelectedCandidate() {
   if (!album || !candidate) return;
   const warning = candidateApprovalWarning(candidate);
   if (warning && !window.confirm(warning)) return;
+  rememberNextSelection();
   state.actionActive = true;
   el.actionMessage.textContent = "Embedding artwork on the NAS...";
   updateActionButtons();
@@ -1395,6 +1419,7 @@ async function importSelectedImage(file) {
 async function convertCurrentArtwork() {
   const album = selectedAlbum();
   if (!album) return;
+  rememberNextSelection();
   state.actionActive = true;
   el.actionMessage.textContent = "Converting current artwork on the NAS...";
   updateActionButtons();
@@ -1416,6 +1441,7 @@ async function rejectSelectedCandidate() {
   const album = selectedAlbum();
   const candidate = selectedCandidate();
   if (!album || !candidate) return;
+  rememberNextSelection();
   state.actionActive = true;
   el.actionMessage.textContent = "Rejecting this cover option...";
   updateActionButtons();
@@ -1441,6 +1467,7 @@ async function rejectAllCandidates() {
   const count = state.candidates.length;
   const confirmed = window.confirm(`Reject all ${count} saved cover option${count === 1 ? "" : "s"} for ${album.artist} - ${album.album}?`);
   if (!confirmed) return;
+  rememberNextSelection();
   state.actionActive = true;
   el.actionMessage.textContent = "Rejecting saved cover options...";
   updateActionButtons();
@@ -1466,6 +1493,7 @@ async function rejectAllCandidates() {
 async function runAlbumAction(path, message, options = {}) {
   const album = selectedAlbum();
   if (!album) return;
+  rememberNextSelection();
   state.actionActive = true;
   el.actionMessage.textContent = options.start || "Working on this album...";
   updateActionButtons();
@@ -1523,6 +1551,22 @@ function artworkViewerPayload(kind = state.viewerKind) {
   };
 }
 
+function setViewerFitMode(mode) {
+  state.viewerFitMode = mode === "actual" ? "actual" : "fit";
+  el.artworkOverlay.classList.toggle("viewer-actual", state.viewerFitMode === "actual");
+  if (el.toggleViewerFitBtn) {
+    el.toggleViewerFitBtn.textContent = state.viewerFitMode === "actual" ? "Fit" : "Actual Size";
+    el.toggleViewerFitBtn.setAttribute(
+      "aria-label",
+      state.viewerFitMode === "actual" ? "Fit artwork to the window" : "Show artwork at actual size",
+    );
+  }
+}
+
+function toggleViewerFitMode() {
+  setViewerFitMode(state.viewerFitMode === "actual" ? "fit" : "actual");
+}
+
 function updateArtworkViewer() {
   if (!state.viewerOpen) return;
   const payload = artworkViewerPayload();
@@ -1536,6 +1580,7 @@ function updateArtworkViewer() {
   el.artworkViewerNav.classList.toggle("hidden", !payload.navigable);
   el.viewerPrevBtn.disabled = !payload.navigable;
   el.viewerNextBtn.disabled = !payload.navigable;
+  if (el.toggleViewerFitBtn) el.toggleViewerFitBtn.disabled = false;
 }
 
 function openArtworkViewer(kind) {
@@ -1545,6 +1590,7 @@ function openArtworkViewer(kind) {
     : document.querySelector(`.cover-box[data-artwork-kind="${kind}"]`);
   state.viewerOpen = true;
   state.viewerKind = kind;
+  setViewerFitMode("fit");
   el.artworkOverlay.classList.remove("hidden");
   document.body.classList.add("viewer-open");
   syncModalIsolation();
@@ -1555,6 +1601,7 @@ function openArtworkViewer(kind) {
 function closeArtworkViewer() {
   state.viewerOpen = false;
   state.viewerKind = "";
+  setViewerFitMode("fit");
   el.artworkOverlay.classList.add("hidden");
   document.body.classList.remove("viewer-open");
   el.artworkViewerImage.removeAttribute("src");
@@ -1638,12 +1685,14 @@ function bind() {
   });
   el.searchInput.addEventListener("input", () => {
     state.query = el.searchInput.value.trim();
+    state.preferredNextKey = "";
     updateSearchControls();
     window.clearTimeout(state.searchTimer);
     state.searchTimer = window.setTimeout(() => refreshQueue({ force: true }), 180);
   });
   el.clearSearchBtn.addEventListener("click", () => {
     state.query = "";
+    state.preferredNextKey = "";
     el.searchInput.value = "";
     updateSearchControls();
     window.clearTimeout(state.searchTimer);
@@ -1653,6 +1702,7 @@ function bind() {
   document.querySelectorAll(".chip").forEach((chip) => {
     chip.addEventListener("click", () => {
       state.bucket = chip.dataset.bucket || "All";
+      state.preferredNextKey = "";
       localStorage.setItem("amwBucket", state.bucket);
       refreshQueue({ force: true });
     });
@@ -1668,11 +1718,31 @@ function bind() {
     });
   });
   el.closeArtworkViewerBtn.addEventListener("click", closeArtworkViewer);
+  if (el.toggleViewerFitBtn) el.toggleViewerFitBtn.addEventListener("click", toggleViewerFitMode);
   el.artworkOverlay.addEventListener("click", (event) => {
     if (event.target === el.artworkOverlay) closeArtworkViewer();
   });
   el.viewerPrevBtn.addEventListener("click", () => moveCandidate(-1));
   el.viewerNextBtn.addEventListener("click", () => moveCandidate(1));
+  if (el.artworkViewerFrame) {
+    el.artworkViewerFrame.addEventListener("dblclick", toggleViewerFitMode);
+    el.artworkViewerFrame.addEventListener("touchstart", (event) => {
+      const touch = event.changedTouches?.[0];
+      if (!touch) return;
+      state.viewerTouchX = touch.clientX;
+      state.viewerTouchY = touch.clientY;
+    }, { passive: true });
+    el.artworkViewerFrame.addEventListener("touchend", (event) => {
+      if (!state.viewerOpen || state.viewerKind !== "candidate" || state.viewerFitMode === "actual") return;
+      const touch = event.changedTouches?.[0];
+      if (!touch) return;
+      const dx = touch.clientX - state.viewerTouchX;
+      const dy = touch.clientY - state.viewerTouchY;
+      if (Math.abs(dx) > 52 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+        moveCandidate(dx < 0 ? 1 : -1);
+      }
+    }, { passive: true });
+  }
   document.addEventListener("keydown", (event) => {
     if (!state.viewerOpen) return;
     if (event.key === "Escape") {
@@ -1684,6 +1754,9 @@ function bind() {
     } else if (event.key === "ArrowRight" && state.viewerKind === "candidate") {
       event.preventDefault();
       moveCandidate(1);
+    } else if (event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      toggleViewerFitMode();
     }
   });
   window.addEventListener("resize", syncResponsiveState);
