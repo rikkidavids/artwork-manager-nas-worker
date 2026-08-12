@@ -2,7 +2,7 @@
 
 NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.36**
+Current worker build: **5.37**
 Worker API: **5**
 
 ## Why This Repo Exists
@@ -17,7 +17,7 @@ Synology Container Manager can then update the worker like a normal container im
 
 The publishing workflow template is included at `github-actions/docker-image.yml`. To activate image publishing, copy that file to `.github/workflows/docker-image.yml` in GitHub or push it from a Git token with `workflow` scope.
 
-Build 5.36 marks the app container for existing Watchtower auto-updates, so the NAS can pull new GitHub Container Registry images without a manual update command.
+Build 5.37 adds docs and a workflow template for an optional GitHub-to-Watchtower trigger, so a successful image publish can ask the NAS to update immediately instead of waiting for the next Watchtower schedule.
 
 ## Web App Function Plan
 
@@ -94,6 +94,36 @@ That manual command remains as a fallback. It pulls the latest GitHub Container 
 
 You can also update from Synology Container Manager by stopping the project, pulling/updating the image, and starting/rebuilding the project.
 
+## Immediate Updates From GitHub
+
+For immediate updates after a push, enable Watchtower's HTTP API and let GitHub call it once the new image has been published.
+
+Add these environment lines to your existing Watchtower project:
+
+```yaml
+- WATCHTOWER_HTTP_API_UPDATE=true
+- WATCHTOWER_HTTP_API_TOKEN=use-a-long-private-token
+- WATCHTOWER_HTTP_API_PERIODIC_POLLS=true
+```
+
+Expose Watchtower's API port only through a private or protected route:
+
+```yaml
+ports:
+  - "8080:8080"
+```
+
+Then add these GitHub repository secrets in `artwork-manager-nas-worker`:
+
+```text
+AMW_WATCHTOWER_UPDATE_URL=https://YOUR-PROTECTED-WATCHTOWER-URL/v1/update
+AMW_WATCHTOWER_UPDATE_TOKEN=the-same-long-private-token
+```
+
+After those secrets exist and the active GitHub workflow contains the trigger step from `github-actions/docker-image.yml`, each push to `main` builds the GHCR image and calls Watchtower immediately. If the secrets are missing, the workflow skips the trigger and still publishes the image normally.
+
+Important: GitHub cannot call a private `192.168.x.x` address. Use a protected HTTPS route, a tunnel, or a self-hosted GitHub runner on the NAS/LAN.
+
 ## Verify
 
 Open this from your Mac:
@@ -105,7 +135,7 @@ http://YOUR-NAS-IP:8765/app/
 Open the plain worker status at `http://YOUR-NAS-IP:8765/` without a browser UI check. You should see:
 
 ```text
-worker_build: "5.36"
+worker_build: "5.37"
 api: 5
 ```
 
