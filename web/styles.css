@@ -1008,6 +1008,34 @@ tbody tr.selected {
   color: var(--muted);
 }
 
+.settings-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  margin-top: 2px;
+  border-radius: 999px;
+  padding: 2px 10px;
+  color: var(--muted);
+  font-weight: 700;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.settings-status.ok {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.settings-status.warn,
+.settings-status.busy {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.settings-status.error {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
 .settings-tab {
   display: block;
   width: 100%;

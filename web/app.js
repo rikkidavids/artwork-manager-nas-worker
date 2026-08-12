@@ -14,6 +14,8 @@ const state = {
   actionActive: false,
   settings: {},
   settingsLoaded: false,
+  settingsDirty: false,
+  settingsSaving: false,
   appInfo: {},
   queueSignature: "",
   tickTimer: 0,
@@ -88,6 +90,7 @@ const el = {
   settingsPanelTitle: document.getElementById("settingsPanelTitle"),
   settingsMessage: document.getElementById("settingsMessage"),
   closeSettingsBtn: document.getElementById("closeSettingsBtn"),
+  saveSettingsBtn: document.getElementById("saveSettingsBtn"),
   settingLibraryRoot: document.getElementById("settingLibraryRoot"),
   settingThemeMode: document.getElementById("settingThemeMode"),
   settingBuild: document.getElementById("settingBuild"),
@@ -189,6 +192,13 @@ function formatDateTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function formatTime(value = new Date()) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
 }
 
 function themeMode(value) {
@@ -434,6 +444,29 @@ function setSettingsTab(tab) {
   }
 }
 
+function settingsMessage(text, tone = "neutral") {
+  if (!el.settingsMessage) return;
+  el.settingsMessage.textContent = text;
+  el.settingsMessage.classList.remove("ok", "warn", "error", "busy");
+  if (tone && tone !== "neutral") el.settingsMessage.classList.add(tone);
+}
+
+function setSettingsDirty(dirty = true) {
+  if (state.settingsSaving) return;
+  state.settingsDirty = Boolean(dirty);
+  if (state.settingsDirty) {
+    settingsMessage("Unsaved changes.", "warn");
+  }
+}
+
+function setSettingsSaving(saving) {
+  state.settingsSaving = Boolean(saving);
+  if (el.saveSettingsBtn) {
+    el.saveSettingsBtn.disabled = state.settingsSaving;
+    el.saveSettingsBtn.textContent = state.settingsSaving ? "Saving..." : "Save";
+  }
+}
+
 function backupSubtitle(item) {
   const pieces = [];
   if (item.action_label) pieces.push(item.action_label);
@@ -499,7 +532,7 @@ async function restoreBackup(historyId) {
   const confirmed = window.confirm(`Restore the previous files for ${item.album_label}? The current files will be backed up first.`);
   if (!confirmed) return;
   state.actionActive = true;
-  if (el.settingsMessage) el.settingsMessage.textContent = "Starting restore on the NAS...";
+  settingsMessage("Starting restore on the NAS...", "busy");
   renderBackupList();
   updateActionButtons();
   try {
@@ -509,10 +542,10 @@ async function restoreBackup(historyId) {
     });
     await refreshStatus();
     scheduleTick(500);
-    if (el.settingsMessage) el.settingsMessage.textContent = "Restore started.";
+    settingsMessage("Restore started.", "ok");
   } catch (error) {
     state.actionActive = false;
-    if (el.settingsMessage) el.settingsMessage.textContent = error.message || "Restore could not start.";
+    settingsMessage(error.message || "Restore could not start.", "error");
     renderBackupList();
     updateActionButtons();
   }
@@ -520,7 +553,7 @@ async function restoreBackup(historyId) {
 
 function maintenanceMessage(text) {
   if (el.maintenanceResult) el.maintenanceResult.textContent = text;
-  if (el.settingsMessage) el.settingsMessage.textContent = text;
+  settingsMessage(text);
 }
 
 function diagnosticsFilename() {
@@ -689,7 +722,8 @@ async function loadSettings() {
   const payload = await api("/api/settings");
   state.settingsLoaded = true;
   populateSettings(payload);
-  el.settingsMessage.textContent = "Ready.";
+  state.settingsDirty = false;
+  settingsMessage("Ready.");
   return payload;
 }
 
@@ -709,7 +743,7 @@ async function openSettings(tab = "general") {
   try {
     await loadSettings();
   } catch (error) {
-    el.settingsMessage.textContent = error.message === "Token required" ? "Enter the token in Security, then save." : "Settings could not be loaded.";
+    settingsMessage(error.message === "Token required" ? "Enter the token in Security, then save." : "Settings could not be loaded.", "error");
     setSettingsTab("security");
   }
   el.closeSettingsBtn.focus({ preventScroll: true });
@@ -746,14 +780,19 @@ async function postSettingsFromForm() {
 async function saveSettings(event) {
   event.preventDefault();
   syncTokenFromSettings();
+  setSettingsSaving(true);
+  settingsMessage("Saving settings...", "busy");
   if (!state.settingsLoaded) {
     try {
       await loadSettings();
       await refreshStatus();
       await refreshQueue();
-      el.settingsMessage.textContent = "Connected.";
+      state.settingsDirty = false;
+      settingsMessage(`Connected and saved at ${formatTime()}.`, "ok");
     } catch (error) {
-      el.settingsMessage.textContent = "Token did not work.";
+      settingsMessage("Token did not work.", "error");
+    } finally {
+      setSettingsSaving(false);
     }
     return;
   }
@@ -761,9 +800,12 @@ async function saveSettings(event) {
     await postSettingsFromForm();
     await refreshStatus();
     await refreshQueue();
-    el.settingsMessage.textContent = "Saved.";
+    state.settingsDirty = false;
+    settingsMessage(`Settings saved at ${formatTime()}.`, "ok");
   } catch (error) {
-    el.settingsMessage.textContent = error.message || "Settings were not saved.";
+    settingsMessage(error.message || "Settings were not saved.", "error");
+  } finally {
+    setSettingsSaving(false);
   }
 }
 
@@ -1241,7 +1283,7 @@ async function startScan(options = {}) {
 
 async function startFreshScanFromSettings() {
   if (state.scanActive || state.actionActive) {
-    el.settingsMessage.textContent = "Wait for the current job to finish first.";
+    settingsMessage("Wait for the current job to finish first.", "warn");
     return;
   }
   const root = el.settingLibraryRoot.value.trim() || "/music";
@@ -1250,16 +1292,19 @@ async function startFreshScanFromSettings() {
   syncTokenFromSettings();
   el.freshScanBtn.disabled = true;
   el.scanBtn.disabled = true;
-  el.settingsMessage.textContent = "Saving settings...";
+  setSettingsSaving(true);
+  settingsMessage("Saving settings...", "busy");
   try {
     await postSettingsFromForm();
-    el.settingsMessage.textContent = "Clearing queue and starting a fresh scan...";
+    state.settingsDirty = false;
+    settingsMessage("Clearing queue and starting a fresh scan...", "busy");
     closeSettings();
     await startScan({ freshDatabase: true });
   } catch (error) {
-    el.settingsMessage.textContent = error.message || "Fresh scan could not start.";
+    settingsMessage(error.message || "Fresh scan could not start.", "error");
     el.scanBtn.disabled = false;
   } finally {
+    setSettingsSaving(false);
     if (!state.scanActive && el.freshScanBtn) el.freshScanBtn.disabled = false;
   }
 }
@@ -1535,6 +1580,8 @@ function bind() {
   });
   el.closeSettingsBtn.addEventListener("click", closeSettings);
   el.settingsForm.addEventListener("submit", saveSettings);
+  el.settingsForm.addEventListener("input", () => setSettingsDirty(true));
+  el.settingsForm.addEventListener("change", () => setSettingsDirty(true));
   el.settingsOverlay.addEventListener("click", (event) => {
     if (event.target === el.settingsOverlay) closeSettings();
   });
