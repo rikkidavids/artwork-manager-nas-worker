@@ -327,6 +327,13 @@ function syncResponsiveState() {
   document.body.classList.toggle("detail-open", detailVisible);
 }
 
+function resetDetailScroll() {
+  if (!el.detailPane || !isPhoneLayout()) return;
+  window.requestAnimationFrame(() => {
+    el.detailPane.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  });
+}
+
 function focusQueue() {
   if (el.queueTableWrap) {
     el.queueTableWrap.focus({ preventScroll: true });
@@ -870,7 +877,7 @@ function updateActionButtons() {
   const canNavigateCandidates = hasAlbum && state.candidates.length > 1 && !busy;
   const showCandidateActions = hasCandidate;
   const showAlbumTools = hasAlbum && (sourceUrl || mode !== "empty");
-  const compactCandidate = (mode === "done" || mode === "empty") && !hasCandidate;
+  const compactCandidate = !hasCandidate;
   const canConvertCurrent = hasAlbum && ["incompatible_artwork", "not_square_artwork"].includes(album.status);
 
   el.detailPane.classList.remove("mode-empty", "mode-work", "mode-review", "mode-done");
@@ -1033,6 +1040,7 @@ async function refreshQueue(options = {}) {
     if (queueChanged) renderRows();
     if (queueChanged || previousSelected !== state.selectedKey || force) {
       renderSelected();
+      if (state.detailOpen && previousSelected !== state.selectedKey) resetDetailScroll();
     } else {
       updateActionButtons();
     }
@@ -1269,11 +1277,13 @@ function renderSelected() {
 }
 
 function selectAlbum(albumKey, options = {}) {
+  const previousKey = state.selectedKey;
   state.selectedKey = albumKey || "";
   if (!options.keepPreferred) state.preferredNextKey = "";
   state.detailOpen = options.openDetail === false ? state.detailOpen : Boolean(state.selectedKey);
   renderSelected();
-  if (options.focusQueue) focusQueue();
+  if (state.detailOpen && previousKey !== state.selectedKey) resetDetailScroll();
+  if (options.focusQueue && !(isPhoneLayout() && state.detailOpen)) focusQueue();
 }
 
 async function startScan(options = {}) {
