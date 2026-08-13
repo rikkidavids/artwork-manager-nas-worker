@@ -105,7 +105,7 @@
                 <img id="currentCover" alt="">
                 <span id="coverPlaceholder">No artwork</span>
               </div>
-              <p id="coverMeta">No cover selected.</p>
+              <p id="coverMeta">No cover selected</p>
             </section>
 
             <section id="candidatePanel" class="art-panel">
@@ -117,14 +117,20 @@
                 <img id="candidateCover" alt="">
                 <span id="candidatePlaceholder">No candidate</span>
               </div>
-              <p id="candidateMeta">Find artwork to see options.</p>
+              <p id="candidateMeta">Find artwork to see options</p>
             </section>
           </div>
 
           <div class="review-bottom">
             <section class="notes-panel">
               <h3>Summary</h3>
-              <p id="summaryLead" class="summary-lead">Select an album to review.</p>
+              <p id="summaryLead" class="summary-lead">Select an album to review</p>
+              <div class="summary-meta">
+                <span id="detailStatus">-</span>
+                <span id="detailReason">-</span>
+                <span id="detailTracks">-</span>
+                <span id="detailChecked">-</span>
+              </div>
               <div id="problemFiles" class="problem-files hidden">
                 <div class="problem-files-head">
                   <strong>Problem files</strong>
@@ -132,17 +138,11 @@
                 </div>
                 <ul id="problemFileList"></ul>
               </div>
-              <div class="summary-meta">
-                <span id="detailStatus">-</span>
-                <span id="detailReason">-</span>
-                <span id="detailTracks">-</span>
-                <span id="detailChecked">-</span>
-              </div>
             </section>
 
             <section class="actions-panel">
               <h3 id="actionsTitle">Actions</h3>
-              <p id="actionMessage">Select an album to begin.</p>
+              <p id="actionMessage">Select an album to begin</p>
               <input id="importImageInput" class="file-input" type="file" accept="image/*">
               <div id="primaryActionRow" class="action-row primary-actions">
                 <button id="findArtworkBtn" class="primary" type="button">Find Artwork</button>
@@ -188,7 +188,7 @@
           <header class="settings-header">
             <div>
               <h2 id="settingsPanelTitle">General</h2>
-              <p id="settingsMessage" class="settings-status">Ready.</p>
+              <p id="settingsMessage" class="settings-status">Ready</p>
             </div>
             <div class="settings-actions">
               <button id="closeSettingsBtn" class="ghost" type="button">Close</button>

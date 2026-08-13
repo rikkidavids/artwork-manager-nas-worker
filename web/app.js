@@ -263,12 +263,23 @@ function checkedLabel(album) {
   return checked === "-" ? "not checked yet" : `checked ${checked}`;
 }
 
+function currentCoverLabel(album, hasReadableCover = false) {
+  if (!album) return "No cover selected";
+  if (hasReadableCover) return album.size_label || "Current cover";
+  if (album.status === "missing_artwork") return "Missing embedded artwork";
+  if (album.status === "incompatible_artwork") return "Needs conversion";
+  if (album.status === "not_square_artwork") return "Not square";
+  if (album.status === "needs_review") return album.size_label ? `${album.size_label} below target` : "Below target";
+  if (album.status === "no_candidate") return album.size_label || "No matching replacement";
+  return "No readable embedded cover";
+}
+
 function targetSize() {
   return Number(state.settings.preferred_artwork_size || state.settings.scan_min_artwork_size || 1200);
 }
 
 function summaryLead(album) {
-  if (!album) return "Select an album to review.";
+  if (!album) return "Select an album to review";
   const target = targetSize();
   if (isDoneAlbum(album)) return `Good - target ${target}`;
   if (album.bucket === "Review") return `Review - target ${target}`;
@@ -279,12 +290,12 @@ function summaryLead(album) {
 
 function nextLabel(album) {
   if (!album) return "-";
-  if (isDoneAlbum(album)) return "Nothing needed.";
-  if (album.bucket === "Review") return "Approve or reject.";
-  if (album.status === "missing_artwork") return "Find a cover.";
-  if (["incompatible_artwork", "not_square_artwork"].includes(album.status)) return "Convert or replace.";
-  if (album.status === "no_candidate") return "Try another search.";
-  return "Find artwork.";
+  if (isDoneAlbum(album)) return "No action needed";
+  if (album.bucket === "Review") return "Approve or reject";
+  if (album.status === "missing_artwork") return "Find a cover";
+  if (["incompatible_artwork", "not_square_artwork"].includes(album.status)) return "Convert or replace";
+  if (album.status === "no_candidate") return "Try another search";
+  return "Find artwork";
 }
 
 function compactChecked(album) {
@@ -369,9 +380,9 @@ function rememberNextSelection() {
 }
 
 function idleActionMessage(album = selectedAlbum()) {
-  if (!album) return "Select an album to begin.";
+  if (!album) return "Select an album to begin";
   const mode = workflowMode(album);
-  if (mode === "done") return "Nothing needed. Search again only if you want a different cover.";
+  if (mode === "done") return "Current cover is good";
   if (mode === "review" && selectedCandidate()) return "Review this cover, then approve or reject it.";
   if (mode === "review") return "Search again to add cover options.";
   return "Find artwork, then approve the best cover.";
@@ -388,7 +399,7 @@ function hasCover(kind) {
 }
 
 function candidateLabel(candidate) {
-  if (!candidate) return "No candidate selected.";
+  if (!candidate) return "No candidate selected";
   const parts = [];
   if (candidate.source) parts.push(candidate.source);
   if (candidate.size_label) parts.push(candidate.size_label);
@@ -404,7 +415,7 @@ function candidateWarnings(candidate) {
 }
 
 function candidateShortLabel(candidate) {
-  if (!candidate) return "No candidate selected.";
+  if (!candidate) return "No candidate selected";
   const parts = [];
   if (candidate.source) parts.push(candidate.source);
   if (candidate.size_label) parts.push(candidate.size_label);
@@ -478,7 +489,7 @@ function setSettingsDirty(dirty = true) {
   if (state.settingsSaving) return;
   state.settingsDirty = Boolean(dirty);
   if (state.settingsDirty) {
-    settingsMessage("Unsaved changes.", "warn");
+    settingsMessage("Unsaved changes", "warn");
   }
 }
 
@@ -746,7 +757,7 @@ async function loadSettings() {
   state.settingsLoaded = true;
   populateSettings(payload);
   state.settingsDirty = false;
-  settingsMessage("Ready.");
+  settingsMessage("Ready");
   return payload;
 }
 
@@ -811,7 +822,7 @@ async function saveSettings(event) {
       await refreshStatus();
       await refreshQueue();
       state.settingsDirty = false;
-      settingsMessage(`Connected and saved at ${formatTime()}.`, "ok");
+      settingsMessage(`Connected and saved at ${formatTime()}`, "ok");
     } catch (error) {
       settingsMessage("Token did not work.", "error");
     } finally {
@@ -824,7 +835,7 @@ async function saveSettings(event) {
     await refreshStatus();
     await refreshQueue();
     state.settingsDirty = false;
-    settingsMessage(`Settings saved at ${formatTime()}.`, "ok");
+    settingsMessage(`Settings saved at ${formatTime()}`, "ok");
   } catch (error) {
     settingsMessage(error.message || "Settings were not saved.", "error");
   } finally {
@@ -877,7 +888,7 @@ function updateActionButtons() {
   const canNavigateCandidates = hasAlbum && state.candidates.length > 1 && !busy;
   const showCandidateActions = hasCandidate;
   const showAlbumTools = hasAlbum && (sourceUrl || mode !== "empty");
-  const compactCandidate = !hasCandidate;
+  const compactCandidate = !hasCandidate && (mode === "empty" || mode === "done");
   const canConvertCurrent = hasAlbum && ["incompatible_artwork", "not_square_artwork"].includes(album.status);
 
   el.detailPane.classList.remove("mode-empty", "mode-work", "mode-review", "mode-done");
@@ -1063,12 +1074,12 @@ async function loadCover(album) {
   el.currentCover.removeAttribute("src");
   if (!album) {
     el.coverPlaceholder.textContent = "No artwork";
-    el.coverMeta.textContent = "No cover selected.";
+    el.coverMeta.textContent = "No cover selected";
     updateArtworkViewer();
     return;
   }
-  el.coverPlaceholder.textContent = "Loading cover...";
-  el.coverMeta.textContent = album.size_label || "Checking current cover...";
+  el.coverPlaceholder.textContent = "Loading cover";
+  el.coverMeta.textContent = album.size_label || "Checking current cover";
   try {
     const response = await fetch(`/api/artwork/current?album_key=${encodeURIComponent(album.album_key)}`, {
       headers: headers(),
@@ -1079,11 +1090,11 @@ async function loadCover(album) {
     state.coverUrl = URL.createObjectURL(blob);
     el.currentCover.src = state.coverUrl;
     box.classList.add("has-cover");
-    el.coverMeta.textContent = album.size_label || "Current artwork";
+    el.coverMeta.textContent = currentCoverLabel(album, true);
     updateArtworkViewer();
   } catch (error) {
     el.coverPlaceholder.textContent = "No artwork";
-    el.coverMeta.textContent = album.status_reason || "No readable embedded cover.";
+    el.coverMeta.textContent = currentCoverLabel(album, false);
     updateArtworkViewer();
   }
 }
@@ -1102,7 +1113,7 @@ async function loadCandidateCover(candidate) {
     updateArtworkViewer();
     return;
   }
-  el.candidatePlaceholder.textContent = "Loading cover...";
+  el.candidatePlaceholder.textContent = "Loading cover";
   try {
     const response = await fetch(`/api/artwork/candidate?candidate_id=${encodeURIComponent(candidate.candidate_id)}`, {
       headers: headers(),
@@ -1127,11 +1138,11 @@ function renderCandidate() {
   el.candidatePosition.textContent = state.candidates.length ? `${state.candidateIndex + 1} of ${state.candidates.length}` : "0 of 0";
   if (!candidate) {
     if (mode === "done") {
-      el.candidateMeta.textContent = "No replacement queued.";
+      el.candidateMeta.textContent = "No replacement queued";
     } else if (album) {
-      el.candidateMeta.textContent = "No saved cover options. Find artwork to start.";
+      el.candidateMeta.textContent = "No saved covers yet";
     } else {
-      el.candidateMeta.textContent = "Find artwork to see options.";
+      el.candidateMeta.textContent = "Find artwork to see options";
     }
     el.candidateMeta.removeAttribute("title");
     if (!state.actionActive) {
@@ -1248,7 +1259,7 @@ function renderSelected() {
     el.detailTracks.textContent = "-";
     el.detailChecked.textContent = "-";
     clearProblemFiles();
-    el.actionMessage.textContent = "Select an album to begin.";
+    el.actionMessage.textContent = "Select an album to begin";
     loadCover(null);
     refreshCandidates(null);
     updateActionButtons();
@@ -1674,7 +1685,7 @@ function bind() {
   el.skipAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/skip", "Skipped for now."));
   el.albumRows.addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-album-key]");
-    if (row) selectAlbum(row.dataset.albumKey, { focusQueue: true });
+    if (row) selectAlbum(row.dataset.albumKey, { focusQueue: true, openDetail: isPhoneLayout() });
   });
   el.queueTableWrap.addEventListener("keydown", (event) => {
     if (event.key === "ArrowDown") {

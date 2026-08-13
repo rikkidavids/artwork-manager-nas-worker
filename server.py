@@ -35,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.41'
-APP_BUILD = '5.41'
+WORKER_BUILD = '5.44'
+APP_BUILD = '5.44'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -45,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.41 smooths the responsive layout, compact empty replacement panels, and phone artwork viewer controls.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.44 tightens phone/tablet layout, label wording, and artwork viewer fit behavior.'
 )
 
 
@@ -979,7 +979,7 @@ def web_status_label(status: Any) -> str:
         'incompatible_artwork': 'Convert',
         'missing_artwork': 'Missing',
         'needs_review': 'Low Res',
-        'no_candidate': 'No Cover',
+        'no_candidate': 'No Match',
         'not_square_artwork': 'Shape',
         'pending': 'Pending',
         'reviewed_skipped': 'Skipped',
@@ -989,7 +989,7 @@ def web_status_label(status: Any) -> str:
 
 def web_status_for_scan_item(item: Dict[str, Any]) -> Tuple[str, str]:
     if not bool(item.get('requires_action')):
-        return 'already_good', 'No action needed.'
+        return 'already_good', 'No action needed'
     identity = item.get('identity') if isinstance(item.get('identity'), dict) else {}
     notes = identity.get('notes') if isinstance(identity.get('notes'), dict) else {}
     width = item.get('width')
