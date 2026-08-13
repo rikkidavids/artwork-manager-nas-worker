@@ -35,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.45'
-APP_BUILD = '5.45'
+WORKER_BUILD = '5.46'
+APP_BUILD = '5.46'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -45,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.45 improves live job feedback and adds browser copy-path support.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.46 fixes mixed-album status priority so per-track problems beat size-only labels.'
 )
 
 
@@ -922,8 +922,47 @@ def web_effective_artwork_target(settings: Dict[str, Any] | None = None) -> int:
     return web_int(settings.get('preferred_artwork_size') or scan_min, scan_min, 200, 5000)
 
 
-def web_live_status(status: Any, width: Any, height: Any, settings: Dict[str, Any]) -> str:
+def web_deep_count(deep: Dict[str, Any], key: str) -> int:
+    try:
+        return int((deep or {}).get(key) or 0)
+    except Exception:
+        return 0
+
+
+def web_deep_status_override(notes: Dict[str, Any], settings: Dict[str, Any] | None = None) -> Tuple[str, str]:
+    deep = notes.get('deep_file_check') if isinstance(notes, dict) and isinstance(notes.get('deep_file_check'), dict) else {}
+    if not deep:
+        return '', ''
+    checked = web_deep_count(deep, 'checked_files')
+    summary = deep_check_summary(deep)
+    if checked <= 0 and ('checked_files' in deep or deep.get('enabled')):
+        return 'missing_artwork', summary or 'No supported music files were checked'
+    if web_deep_count(deep, 'missing_count') or web_deep_count(deep, 'unreadable_count'):
+        return 'missing_artwork', summary or 'Artwork is missing from at least one track'
+    if web_deep_count(deep, 'incompatible_count'):
+        return 'incompatible_artwork', summary or 'Artwork needs conversion'
+    if web_deep_count(deep, 'non_square_count'):
+        return 'not_square_artwork', summary or 'Artwork is not square'
+    if web_deep_count(deep, 'below_target_count'):
+        if settings is not None:
+            try:
+                current_target = int(web_effective_artwork_target(settings) or 0)
+                checked_target = int(deep.get('target_size') or 0)
+            except Exception:
+                current_target = 0
+                checked_target = 0
+            if current_target and checked_target and current_target != checked_target:
+                return '', ''
+        return 'needs_review', summary or 'Artwork is below target'
+    return '', ''
+
+
+def web_live_status(status: Any, width: Any, height: Any, settings: Dict[str, Any], notes: Dict[str, Any] | None = None) -> str:
     status = str(status or '').strip() or 'pending'
+    if status not in {'candidate_found', 'reviewed_skipped', 'ignored', 'no_candidate', 'searching'}:
+        deep_status, _deep_reason = web_deep_status_override(notes or {}, settings)
+        if deep_status:
+            return deep_status
     if status not in LIVE_SIZE_STATUSES:
         return status
     if width in (None, '', 'Missing') or height in (None, '', 'Missing'):
@@ -945,16 +984,19 @@ def web_live_status(status: Any, width: Any, height: Any, settings: Dict[str, An
 
 
 def web_live_status_reason(status: str, raw_status: str, width: Any, height: Any, settings: Dict[str, Any], notes: Dict[str, Any]) -> str:
+    deep_status, deep_reason = web_deep_status_override(notes or {}, settings)
+    if deep_status and status == deep_status:
+        return deep_reason
     if status == raw_status:
         return notes.get('status_reason') or ''
     if status == 'missing_artwork':
-        return 'Current cover is missing.'
+        return 'Current cover is missing'
     if status == 'not_square_artwork':
-        return 'Current cover is not square.'
+        return 'Current cover is not square'
     if status == 'needs_review':
         target = web_effective_artwork_target(settings)
         size = f'{width} x {height}' if width and height else 'current cover'
-        return f'{size} is below target {target}.'
+        return f'{size} is below target {target}'
     return notes.get('status_reason') or ''
 
 
@@ -992,21 +1034,24 @@ def web_status_for_scan_item(item: Dict[str, Any]) -> Tuple[str, str]:
         return 'already_good', 'No action needed'
     identity = item.get('identity') if isinstance(item.get('identity'), dict) else {}
     notes = identity.get('notes') if isinstance(identity.get('notes'), dict) else {}
+    deep_status, deep_reason = web_deep_status_override(notes)
+    if deep_status:
+        return deep_status, deep_reason
     width = item.get('width')
     height = item.get('height')
     compat = notes.get('artwork_compatibility') if isinstance(notes.get('artwork_compatibility'), dict) else {}
     folder = notes.get('album_folder_cover') if isinstance(notes.get('album_folder_cover'), dict) else {}
     if width in (None, '', 'Missing') or height in (None, '', 'Missing'):
-        return 'missing_artwork', 'Embedded artwork is missing from at least one track.'
+        return 'missing_artwork', 'Embedded artwork is missing from at least one track'
     if compat.get('needs_conversion') or folder.get('needs_save'):
-        issue = compat.get('issue') or compat.get('format') or folder.get('issue') or 'Artwork needs rewriting.'
+        issue = compat.get('issue') or compat.get('format') or folder.get('issue') or 'Artwork needs rewriting'
         return 'incompatible_artwork', str(issue)
     try:
         if int(width or 0) != int(height or 0):
-            return 'not_square_artwork', 'Current artwork is not square.'
+            return 'not_square_artwork', 'Current artwork is not square'
     except Exception:
         pass
-    return 'needs_review', 'Current artwork needs a better cover.'
+    return 'needs_review', 'Current artwork needs a better cover'
 
 
 def web_decode_notes(value: Any) -> Dict[str, Any]:
@@ -1484,9 +1529,10 @@ def web_queue_counts(settings: Dict[str, Any] | None = None) -> Dict[str, int]:
     counts = {'All': 0, 'Needs Work': 0, 'Review': 0, 'Done': 0}
     settings = settings or web_get_settings()
     with db_connect() as conn:
-        rows = conn.execute('SELECT status, width, height FROM albums').fetchall()
+        rows = conn.execute('SELECT status, width, height, notes FROM albums').fetchall()
     for row in rows:
-        live_status = web_live_status(row['status'], row['width'], row['height'], settings)
+        notes = web_decode_notes(row['notes'])
+        live_status = web_live_status(row['status'], row['width'], row['height'], settings, notes)
         counts['All'] += 1
         bucket = web_status_bucket(live_status)
         counts[bucket] = counts.get(bucket, 0) + 1
@@ -1503,7 +1549,7 @@ def web_album_from_row(row: sqlite3.Row, settings: Dict[str, Any] | None = None)
     else:
         size = 'Missing'
     raw_status = row['status'] or 'pending'
-    status = web_live_status(raw_status, width, height, settings)
+    status = web_live_status(raw_status, width, height, settings, notes)
     return {
         'album_key': row['album_key'],
         'artist': row['artist'] or 'Unknown Artist',
@@ -1747,19 +1793,19 @@ def safe_backup_path(value: str) -> Path:
 
 
 def web_status_from_deep_check(deep: Dict[str, Any]) -> Tuple[str, str]:
-    checked = int((deep or {}).get('checked_files') or 0)
+    checked = web_deep_count(deep, 'checked_files')
     summary = deep_check_summary(deep)
     if checked <= 0:
-        return 'missing_artwork', 'No supported music files were checked after restore.'
-    if deep.get('missing_count') or deep.get('unreadable_count'):
-        return 'missing_artwork', summary or 'Restored backup, but some files still have missing artwork.'
-    if deep.get('incompatible_count'):
-        return 'incompatible_artwork', summary or 'Restored backup, but artwork still needs conversion.'
-    if deep.get('non_square_count'):
-        return 'not_square_artwork', summary or 'Restored backup, but artwork is still not square.'
-    if deep.get('below_target_count'):
-        return 'needs_review', summary or 'Restored backup, but artwork is below target.'
-    return 'already_good', summary or 'Restored backup and verified artwork.'
+        return 'missing_artwork', 'No supported music files were checked'
+    if web_deep_count(deep, 'missing_count') or web_deep_count(deep, 'unreadable_count'):
+        return 'missing_artwork', summary or 'Artwork is missing from at least one track'
+    if web_deep_count(deep, 'incompatible_count'):
+        return 'incompatible_artwork', summary or 'Artwork needs conversion'
+    if web_deep_count(deep, 'non_square_count'):
+        return 'not_square_artwork', summary or 'Artwork is not square'
+    if web_deep_count(deep, 'below_target_count'):
+        return 'needs_review', summary or 'Artwork is below target'
+    return 'already_good', summary or 'Artwork verified'
 
 
 def web_restore_backup_history(history_id: Any, job_id: str = '') -> Dict[str, Any]:
@@ -2906,13 +2952,15 @@ def web_approve_candidate(album_key: str, candidate_id: Any, job_id: str = '') -
     deep_result = deep_check(folder, target, problem_files=False, tolerance=target_tolerance(settings.get('target_size_match_mode')))
     deep = deep_result.get('deep_file_check') or {}
     ok = bool(updated and not failed and not deep.get('requires_action'))
-    status = 'approved' if ok else 'incompatible_artwork'
     if ok:
+        status = 'approved'
         reason = f'Embedded {updated}/{total} tracks.'
     elif failed:
+        status = 'incompatible_artwork'
         reason = f'Updated {updated}/{total} tracks; {len(failed)} file(s) failed.'
     else:
-        reason = deep_check_summary(deep) or 'Artwork embedded, but a follow-up check still found an issue.'
+        status, reason = web_status_from_deep_check(deep)
+        reason = reason or deep_check_summary(deep) or 'Artwork embedded, but a follow-up check still found an issue.'
     notes_update = {
         'status_reason': reason,
         'deep_file_check': deep,
@@ -2983,13 +3031,15 @@ def web_convert_current_artwork(album_key: str, job_id: str = '') -> Dict[str, A
     deep_result = deep_check(folder, target, problem_files=False, tolerance=target_tolerance(settings.get('target_size_match_mode')))
     deep = deep_result.get('deep_file_check') or {}
     ok = bool(updated and not failed and not deep.get('requires_action'))
-    status = 'already_good' if ok else 'incompatible_artwork'
     if ok:
+        status = 'already_good'
         reason = f'Converted current artwork for {updated}/{total} tracks.'
     elif failed:
+        status = 'incompatible_artwork'
         reason = f'Converted {updated}/{total} tracks; {len(failed)} file(s) failed.'
     else:
-        reason = deep_check_summary(deep) or 'Current artwork was converted, but a follow-up check still found an issue.'
+        status, reason = web_status_from_deep_check(deep)
+        reason = reason or deep_check_summary(deep) or 'Current artwork was converted, but a follow-up check still found an issue.'
     notes_update = {
         'status_reason': reason,
         'deep_file_check': deep,
