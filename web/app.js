@@ -85,6 +85,7 @@ const el = {
   rejectAllBtn: document.getElementById("rejectAllBtn"),
   importImageBtn: document.getElementById("importImageBtn"),
   recheckAlbumBtn: document.getElementById("recheckAlbumBtn"),
+  copyFolderBtn: document.getElementById("copyFolderBtn"),
   openSourceBtn: document.getElementById("openSourceBtn"),
   googleImagesBtn: document.getElementById("googleImagesBtn"),
   markGoodBtn: document.getElementById("markGoodBtn"),
@@ -390,6 +391,10 @@ function idleActionMessage(album = selectedAlbum()) {
 
 function setVisible(node, visible) {
   node.classList.toggle("hidden", !visible);
+}
+
+function albumFolderPath(album = selectedAlbum()) {
+  return String(album?.album_path || album?.folder_path || "").trim();
 }
 
 function hasCover(kind) {
@@ -850,14 +855,60 @@ function activeScanJob(status) {
 
 function activeReviewJob(status) {
   const jobs = Array.isArray(status.active_jobs) ? status.active_jobs : [];
-  return jobs.find((job) => job && ["artwork-search", "approve-embed", "convert-current", "restore-backup", "repair-queue"].includes(job.kind));
+  const kinds = new Set([
+    "artwork-search",
+    "approve-embed",
+    "convert-current",
+    "restore-backup",
+    "repair-queue",
+    "embed",
+    "deep-check",
+  ]);
+  return jobs.find((job) => job && kinds.has(job.kind));
+}
+
+function showActivityPanel(title, text) {
+  el.scanPanel.classList.remove("hidden");
+  el.scanTitle.textContent = title;
+  el.scanText.textContent = text || "Working on the NAS";
+}
+
+function jobTitle(job) {
+  return {
+    "artwork-search": "Searching artwork",
+    "approve-embed": "Embedding artwork",
+    "convert-current": "Converting current cover",
+    "restore-backup": "Restoring backup",
+    "repair-queue": "Repairing queue",
+    embed: "Embedding artwork",
+    "deep-check": "Checking album",
+  }[job?.kind] || "Working on the NAS";
+}
+
+function optionLabel(count) {
+  return `${fmt(count)} option${Number(count) === 1 ? "" : "s"}`;
+}
+
+function jobDetailText(job = {}) {
+  const pieces = [];
+  const label = String(job.label || "").trim();
+  if (label && label.toLowerCase() !== "album") pieces.push(label);
+  if (job.candidate_count || job.candidate_count === 0) pieces.push(optionLabel(job.candidate_count));
+  if (job.total || job.processed_albums) {
+    const checked = Number(job.processed_albums || job.checked || 0);
+    const total = Number(job.total || 0);
+    pieces.push(total ? `${fmt(checked)} of ${fmt(total)} checked` : `${fmt(checked)} checked`);
+  }
+  if (job.updated || job.changed) pieces.push(`${fmt(job.updated || job.changed)} updated`);
+  if (job.last_provider) pieces.push(`Last source ${job.last_provider}`);
+  return pieces.join(" - ") || "Working on the NAS";
 }
 
 function renderScan(status) {
   const job = activeScanJob(status);
   state.scanActive = Boolean(job);
-  el.scanBtn.disabled = state.scanActive;
-  if (el.freshScanBtn) el.freshScanBtn.disabled = state.scanActive;
+  el.scanBtn.disabled = state.scanActive || state.actionActive;
+  if (el.freshScanBtn) el.freshScanBtn.disabled = state.scanActive || state.actionActive;
   if (!job) {
     el.scanPanel.classList.add("hidden");
     return;
@@ -872,16 +923,14 @@ function renderScan(status) {
   if (queued) bits.push(`${fmt(queued)} need work`);
   if (skipped) bits.push(`${fmt(skipped)} unchanged skipped`);
   if (pending) bits.push(`${fmt(pending)} checking now`);
-  el.scanPanel.classList.remove("hidden");
-  el.scanTitle.textContent = "Scan running";
-  el.scanText.textContent = bits.join(" - ") + (latest ? ` - Latest: ${shortPath(latest)}` : "");
+  showActivityPanel("Scan running", bits.join(" - ") + (latest ? ` - Now ${shortPath(latest)}` : ""));
 }
 
 function updateActionButtons() {
   const album = selectedAlbum();
   const candidate = selectedCandidate();
   const mode = workflowMode(album);
-  const busy = Boolean(state.actionActive);
+  const busy = Boolean(state.actionActive || state.scanActive);
   const hasCandidate = Boolean(candidate);
   const sourceUrl = candidate?.source_page || candidate?.source_url || "";
   const hasAlbum = Boolean(album);
@@ -913,6 +962,7 @@ function updateActionButtons() {
   setVisible(el.quietActionRow, showAlbumTools);
   setVisible(el.importImageBtn, hasAlbum);
   setVisible(el.recheckAlbumBtn, hasAlbum);
+  setVisible(el.copyFolderBtn, Boolean(albumFolderPath(album)));
   setVisible(el.openSourceBtn, Boolean(sourceUrl));
   setVisible(el.googleImagesBtn, hasAlbum);
   setVisible(el.markGoodBtn, hasAlbum && mode !== "done");
@@ -927,6 +977,7 @@ function updateActionButtons() {
   el.rejectAllBtn.disabled = !album || !hasCandidate || busy;
   el.importImageBtn.disabled = !album || busy;
   el.recheckAlbumBtn.disabled = !album || busy;
+  el.copyFolderBtn.disabled = !albumFolderPath(album);
   el.openSourceBtn.disabled = !sourceUrl;
   el.googleImagesBtn.disabled = !album;
   el.markGoodBtn.disabled = !album || busy;
@@ -935,17 +986,24 @@ function updateActionButtons() {
 
 function renderReviewJob(status) {
   const job = activeReviewJob(status);
+  const wasActive = state.actionActive;
   state.actionActive = Boolean(job);
+  el.scanBtn.disabled = state.scanActive || state.actionActive;
+  if (el.freshScanBtn) el.freshScanBtn.disabled = state.scanActive || state.actionActive;
   const maintenanceBusy = state.scanActive || state.actionActive;
   if (el.repairQueueBtn) el.repairQueueBtn.disabled = maintenanceBusy;
   if (el.cleanupStaleBtn) el.cleanupStaleBtn.disabled = maintenanceBusy;
   if (job) {
-    const count = job.candidate_count ? ` - ${fmt(job.candidate_count)} option(s)` : "";
-    const label = job.kind === "approve-embed"
-      ? "Embedding artwork"
-      : (job.kind === "convert-current" ? "Converting current artwork" : (job.kind === "restore-backup" ? "Restoring backup" : (job.kind === "repair-queue" ? "Repairing queue" : "Searching artwork")));
-    el.actionMessage.textContent = `${label}${count}...`;
-    if (job.kind === "repair-queue") maintenanceMessage(job.label || "Repairing queue...");
+    const title = jobTitle(job);
+    const detail = jobDetailText(job);
+    el.actionMessage.textContent = job.candidate_count || job.candidate_count === 0
+      ? `${title} - ${optionLabel(job.candidate_count)}`
+      : title;
+    if (!state.scanActive) showActivityPanel(title, detail);
+    if (job.kind === "repair-queue") maintenanceMessage(job.label || "Repairing queue");
+  } else if (wasActive && !state.scanActive) {
+    el.scanPanel.classList.add("hidden");
+    if (selectedAlbum()) el.actionMessage.textContent = idleActionMessage();
   }
   updateActionButtons();
   if (!el.settingsOverlay.classList.contains("hidden")) renderBackupList();
@@ -1357,7 +1415,7 @@ async function startArtworkSearch() {
   const album = selectedAlbum();
   if (!album) return;
   state.actionActive = true;
-  el.actionMessage.textContent = "Searching artwork...";
+  el.actionMessage.textContent = "Searching artwork";
   updateActionButtons();
   try {
     await api("/api/artwork/search", {
@@ -1381,7 +1439,7 @@ async function approveSelectedCandidate() {
   if (warning && !window.confirm(warning)) return;
   rememberNextSelection();
   state.actionActive = true;
-  el.actionMessage.textContent = "Embedding artwork on the NAS...";
+  el.actionMessage.textContent = "Embedding artwork on the NAS";
   updateActionButtons();
   try {
     await api("/api/artwork/approve", {
@@ -1410,7 +1468,7 @@ async function importSelectedImage(file) {
     return;
   }
   state.actionActive = true;
-  el.actionMessage.textContent = "Importing image...";
+  el.actionMessage.textContent = "Importing image";
   updateActionButtons();
   try {
     const imageB64 = await fileToBase64(file);
@@ -1442,7 +1500,7 @@ async function convertCurrentArtwork() {
   if (!album) return;
   rememberNextSelection();
   state.actionActive = true;
-  el.actionMessage.textContent = "Converting current artwork on the NAS...";
+  el.actionMessage.textContent = "Converting current artwork on the NAS";
   updateActionButtons();
   try {
     await api("/api/artwork/convert-current", {
@@ -1464,7 +1522,7 @@ async function rejectSelectedCandidate() {
   if (!album || !candidate) return;
   rememberNextSelection();
   state.actionActive = true;
-  el.actionMessage.textContent = "Rejecting this cover option...";
+  el.actionMessage.textContent = "Rejecting this cover option";
   updateActionButtons();
   try {
     await api("/api/artwork/reject", {
@@ -1473,7 +1531,7 @@ async function rejectSelectedCandidate() {
     });
     await refreshQueue({ autoHandoff: true });
     await refreshCandidates(selectedAlbum());
-    el.actionMessage.textContent = "Rejected cover option.";
+    el.actionMessage.textContent = "Rejected cover option";
   } catch (error) {
     el.actionMessage.textContent = error.message || "Candidate could not be rejected.";
   } finally {
@@ -1490,7 +1548,7 @@ async function rejectAllCandidates() {
   if (!confirmed) return;
   rememberNextSelection();
   state.actionActive = true;
-  el.actionMessage.textContent = "Rejecting saved cover options...";
+  el.actionMessage.textContent = "Rejecting saved cover options";
   updateActionButtons();
   try {
     await api("/api/artwork/reject-all", {
@@ -1502,7 +1560,7 @@ async function rejectAllCandidates() {
     renderCandidate();
     await refreshQueue({ force: true, autoHandoff: true });
     await refreshCandidates(selectedAlbum());
-    el.actionMessage.textContent = "Rejected saved cover options.";
+    el.actionMessage.textContent = "Rejected saved cover options";
   } catch (error) {
     el.actionMessage.textContent = error.message || "Saved cover options could not be rejected.";
   } finally {
@@ -1516,7 +1574,7 @@ async function runAlbumAction(path, message, options = {}) {
   if (!album) return;
   rememberNextSelection();
   state.actionActive = true;
-  el.actionMessage.textContent = options.start || "Working on this album...";
+  el.actionMessage.textContent = options.start || "Working on this album";
   updateActionButtons();
   try {
     await api(path, {
@@ -1544,6 +1602,17 @@ function openSourcePage() {
   const candidate = selectedCandidate();
   const url = candidate?.source_page || candidate?.source_url || "";
   if (url) window.open(url, "_blank", "noopener");
+}
+
+async function copyFolderPath() {
+  const path = albumFolderPath();
+  if (!path) return;
+  try {
+    await navigator.clipboard.writeText(path);
+    el.actionMessage.textContent = "Folder path copied";
+  } catch (error) {
+    el.actionMessage.textContent = path;
+  }
 }
 
 function openGoogleImages() {
@@ -1678,11 +1747,12 @@ function bind() {
   el.nextCandidateBtn.addEventListener("click", () => moveCandidate(1));
   el.importImageBtn.addEventListener("click", openImportImagePicker);
   el.importImageInput.addEventListener("change", () => importSelectedImage(el.importImageInput.files?.[0]));
-  el.recheckAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/recheck", "Rechecked album.", { start: "Rechecking this album..." }));
+  el.recheckAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/recheck", "Rechecked album", { start: "Rechecking this album" }));
+  el.copyFolderBtn.addEventListener("click", copyFolderPath);
   el.openSourceBtn.addEventListener("click", openSourcePage);
   el.googleImagesBtn.addEventListener("click", openGoogleImages);
-  el.markGoodBtn.addEventListener("click", () => runAlbumAction("/api/album/mark-good", "Marked as good."));
-  el.skipAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/skip", "Skipped for now."));
+  el.markGoodBtn.addEventListener("click", () => runAlbumAction("/api/album/mark-good", "Marked as good"));
+  el.skipAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/skip", "Skipped for now"));
   el.albumRows.addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-album-key]");
     if (row) selectAlbum(row.dataset.albumKey, { focusQueue: true, openDetail: isPhoneLayout() });
