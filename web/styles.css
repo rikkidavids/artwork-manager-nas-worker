@@ -742,6 +742,11 @@ tbody tr.selected {
   overflow: hidden;
 }
 
+.review-bottom > * {
+  min-width: 0;
+  min-height: 0;
+}
+
 .actions-panel {
   min-width: 0;
   min-height: 0;
@@ -988,6 +993,8 @@ tbody tr.selected {
   height: auto;
   max-width: 100%;
   max-height: 100%;
+  align-self: center;
+  justify-self: center;
   object-fit: contain;
 }
 
@@ -1959,6 +1966,16 @@ tbody tr.selected {
   .artwork-viewer-frame {
     place-items: center;
     padding: 10px;
+  }
+
+  .artwork-overlay:not(.viewer-actual) .artwork-viewer-frame {
+    place-items: start center;
+    overflow-y: auto;
+  }
+
+  .artwork-overlay:not(.viewer-actual) .artwork-viewer-frame img {
+    align-self: start;
+    max-height: calc(100svh - 142px);
   }
 
   .artwork-overlay.viewer-actual .artwork-viewer-frame {

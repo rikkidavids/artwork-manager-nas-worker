@@ -334,6 +334,15 @@ function selectedIndex() {
   return state.albums.findIndex((item) => item.album_key === state.selectedKey);
 }
 
+function mergeAlbumUpdate(album) {
+  if (!album?.album_key) return null;
+  const index = state.albums.findIndex((item) => item.album_key === album.album_key);
+  if (index < 0) return null;
+  state.albums[index] = { ...state.albums[index], ...album };
+  state.queueSignature = queueSignature(state.albums);
+  return state.albums[index];
+}
+
 function syncResponsiveState() {
   const detailVisible = isPhoneLayout() && state.detailOpen && Boolean(state.selectedKey);
   document.body.classList.toggle("detail-open", detailVisible);
@@ -1291,13 +1300,23 @@ async function loadProblemFiles(album) {
     const payload = await api(`/api/album/problems?album_key=${encodeURIComponent(albumKey)}`);
     if (state.problemKey !== albumKey || state.selectedKey !== albumKey) return;
     renderProblemFiles(payload.problem_files || [], payload.deep_file_check || {});
+    if (payload.counts) setCounts(payload.counts);
+    const updatedAlbum = mergeAlbumUpdate(payload.album);
+    if (updatedAlbum) {
+      if (state.bucket !== "All" && updatedAlbum.bucket !== state.bucket) {
+        await refreshQueue({ force: true, autoHandoff: true });
+        return;
+      }
+      renderRows();
+      renderSelected({ skipProblemFiles: true });
+    }
   } catch (error) {
     if (state.problemKey !== albumKey || state.selectedKey !== albumKey) return;
     clearProblemFiles();
   }
 }
 
-function renderSelected() {
+function renderSelected(options = {}) {
   const album = selectedAlbum();
   el.albumRows.querySelectorAll("tr").forEach((row) => {
     const selected = row.dataset.albumKey === state.selectedKey;
@@ -1341,7 +1360,7 @@ function renderSelected() {
   renderCandidate();
   loadCover(album);
   refreshCandidates(album);
-  loadProblemFiles(album);
+  if (!options.skipProblemFiles) loadProblemFiles(album);
   updateActionButtons();
 }
 

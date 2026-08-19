@@ -35,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.46'
-APP_BUILD = '5.46'
+WORKER_BUILD = '5.47'
+APP_BUILD = '5.47'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -45,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.46 fixes mixed-album status priority so per-track problems beat size-only labels.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.47 refreshes album rows from fresh file checks and fixes the artwork inspector fit view.'
 )
 
 
@@ -914,12 +914,30 @@ def web_album_key(album_path: Any) -> str:
 REVIEW_STATUSES = ('candidate_found',)
 DONE_STATUSES = ('already_good', 'approved', 'reviewed_skipped', 'ignored')
 LIVE_SIZE_STATUSES = {'already_good', 'approved'}
+MANUAL_STATUS_OVERRIDE_KEY = 'manual_status_override'
 
 
 def web_effective_artwork_target(settings: Dict[str, Any] | None = None) -> int:
     settings = settings or web_get_settings()
     scan_min = web_int(settings.get('scan_min_artwork_size'), 1000, 200, 5000)
     return web_int(settings.get('preferred_artwork_size') or scan_min, scan_min, 200, 5000)
+
+
+def web_manual_override_status(notes: Dict[str, Any], settings: Dict[str, Any]) -> str:
+    override = notes.get(MANUAL_STATUS_OVERRIDE_KEY) if isinstance(notes, dict) else {}
+    if not isinstance(override, dict):
+        return ''
+    status = str(override.get('status') or '').strip()
+    if status not in DONE_STATUSES:
+        return ''
+    try:
+        override_target = int(override.get('target_size') or 0)
+    except Exception:
+        override_target = 0
+    current_target = web_effective_artwork_target(settings)
+    if override_target and current_target and override_target != current_target:
+        return ''
+    return status
 
 
 def web_deep_count(deep: Dict[str, Any], key: str) -> int:
@@ -959,6 +977,9 @@ def web_deep_status_override(notes: Dict[str, Any], settings: Dict[str, Any] | N
 
 def web_live_status(status: Any, width: Any, height: Any, settings: Dict[str, Any], notes: Dict[str, Any] | None = None) -> str:
     status = str(status or '').strip() or 'pending'
+    manual_status = web_manual_override_status(notes or {}, settings)
+    if manual_status and manual_status == status:
+        return manual_status
     if status not in {'candidate_found', 'reviewed_skipped', 'ignored', 'no_candidate', 'searching'}:
         deep_status, _deep_reason = web_deep_status_override(notes or {}, settings)
         if deep_status:
@@ -984,6 +1005,9 @@ def web_live_status(status: Any, width: Any, height: Any, settings: Dict[str, An
 
 
 def web_live_status_reason(status: str, raw_status: str, width: Any, height: Any, settings: Dict[str, Any], notes: Dict[str, Any]) -> str:
+    manual_status = web_manual_override_status(notes or {}, settings)
+    if manual_status and status == manual_status:
+        return notes.get('status_reason') or 'Marked good'
     deep_status, deep_reason = web_deep_status_override(notes or {}, settings)
     if deep_status and status == deep_status:
         return deep_reason
@@ -1378,6 +1402,7 @@ def web_recheck_album_row(row: sqlite3.Row, settings: Dict[str, Any]) -> Dict[st
         status = 'candidate_found'
         reason = f'{active_candidates} saved artwork option(s) ready.'
     notes = web_decode_notes(row['notes'])
+    notes.pop(MANUAL_STATUS_OVERRIDE_KEY, None)
     notes.update({
         'status_reason': reason,
         'deep_file_check': deep,
@@ -1625,12 +1650,54 @@ def web_get_album(album_key: str) -> Dict[str, Any] | None:
     return web_album_from_row(row, settings) if row else None
 
 
+def web_persist_album_deep_check(row: sqlite3.Row, settings: Dict[str, Any], deep_result: Dict[str, Any], source: str) -> Dict[str, Any] | None:
+    album_key = str(row['album_key'] or '')
+    if not album_key:
+        return None
+    raw_status = str(row['status'] or '')
+    if raw_status in {'reviewed_skipped', 'ignored', 'searching'}:
+        return web_get_album(album_key)
+    deep = deep_result.get('deep_file_check') if isinstance(deep_result, dict) else {}
+    if not isinstance(deep, dict):
+        deep = {}
+    status, reason = web_status_from_deep_check(deep)
+    notes = web_decode_notes(row['notes'])
+    active_candidates = web_active_candidate_count(album_key)
+    if raw_status == 'candidate_found' and status != 'already_good' and active_candidates:
+        status = 'candidate_found'
+        reason = f'{active_candidates} saved artwork option(s) ready.'
+    elif raw_status == 'no_candidate' and status != 'already_good':
+        status = 'no_candidate'
+        reason = str(notes.get('status_reason') or 'No saved covers yet')
+    notes.pop(MANUAL_STATUS_OVERRIDE_KEY, None)
+    notes.update({
+        'status_reason': reason,
+        'deep_file_check': deep,
+        'last_deep_check': {
+            'checked_at': now(),
+            'source': source,
+            'target_size': web_effective_artwork_target(settings),
+        },
+    })
+    width = deep.get('example_width') or deep.get('min_width')
+    height = deep.get('example_height') or deep.get('min_height')
+    example = deep.get('example_file') or deep.get('first_issue_file') or row['example_file'] or ''
+    with db_connect() as conn:
+        conn.execute(
+            'UPDATE albums SET status=?, width=?, height=?, example_file=?, notes=?, last_scanned=? WHERE album_key=?',
+            (status, width, height, example, json.dumps(notes), now(), album_key),
+        )
+    return web_get_album(album_key)
+
+
 def web_album_problem_files(album_key: str) -> Dict[str, Any]:
-    album = web_get_album(album_key)
-    if not album:
-        raise ValueError('Album not found')
-    album_path = safe_path(album.get('album_path') or '')
     settings = web_get_settings()
+    with db_connect() as conn:
+        row = conn.execute('SELECT * FROM albums WHERE album_key=?', (album_key,)).fetchone()
+    if not row:
+        raise ValueError('Album not found')
+    album = web_album_from_row(row, settings)
+    album_path = safe_path(album.get('album_path') or '')
     target = web_effective_artwork_target(settings)
     result = deep_check(
         album_path,
@@ -1638,10 +1705,13 @@ def web_album_problem_files(album_key: str) -> Dict[str, Any]:
         problem_files=True,
         tolerance=target_tolerance(settings.get('target_size_match_mode')),
     )
+    updated_album = web_persist_album_deep_check(row, settings, result, 'problem_files')
     return {
         'ok': True,
         'album_key': album_key,
         'target_size': target,
+        'album': updated_album or web_get_album(album_key),
+        'counts': web_queue_counts(settings),
         **result,
         'worker_build': WORKER_BUILD,
         'api': WORKER_API,
@@ -3184,7 +3254,16 @@ def web_album_simple_action(album_key: str, status: str, reason: str, action: st
     album = web_get_album(album_key)
     if not album:
         raise ValueError('Album not found')
-    web_set_album_status(album_key, status, reason)
+    updates: Dict[str, Any] = {}
+    if action == 'web_mark_good':
+        settings = web_get_settings()
+        updates[MANUAL_STATUS_OVERRIDE_KEY] = {
+            'status': status,
+            'target_size': web_effective_artwork_target(settings),
+            'created_at': now(),
+        }
+        reason = reason.rstrip('.')
+    web_set_album_status(album_key, status, reason, updates)
     web_add_history(album_key, action, {'status': status, 'reason': reason})
     return {'ok': True, 'album': web_get_album(album_key)}
 
