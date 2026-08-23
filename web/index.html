@@ -49,12 +49,15 @@
       </section>
 
       <section class="workspace">
-        <aside class="queue-pane">
+        <aside id="queuePane" class="queue-pane">
           <div class="pane-head">
             <div>
               <h2>Queue</h2>
             </div>
-            <span id="shownCount">0 shown</span>
+            <div class="pane-actions">
+              <span id="shownCount">0 shown</span>
+              <button id="selectModeBtn" class="ghost select-mode-btn" type="button">Select</button>
+            </div>
           </div>
           <div class="queue-controls">
             <div class="search-row">
@@ -68,20 +71,32 @@
               <button class="chip" type="button" data-bucket="Done">Done</button>
             </div>
           </div>
+          <div id="batchBar" class="batch-bar hidden" aria-live="polite">
+            <span id="selectedCount">0 selected</span>
+            <div class="batch-actions">
+              <button id="batchSelectAllBtn" class="ghost" type="button">All Shown</button>
+              <button id="batchFindBtn" class="ghost" type="button">Find Covers</button>
+              <button id="batchConvertBtn" class="ghost" type="button">Convert</button>
+              <button id="batchMarkGoodBtn" class="ghost" type="button">Mark Good</button>
+              <button id="batchSkipBtn" class="ghost" type="button">Skip</button>
+              <button id="clearSelectionBtn" class="ghost" type="button">Clear</button>
+            </div>
+          </div>
           <div id="queueTableWrap" class="table-wrap" tabindex="0" role="region" aria-label="Album queue">
             <table>
               <thead>
                 <tr>
-                  <th>Status</th>
-                  <th>Artist</th>
-                  <th>Album</th>
-                  <th>Size</th>
-                  <th>Opts</th>
+                  <th class="select-col" aria-hidden="true"></th>
+                  <th class="status-col">Status</th>
+                  <th class="artist-col">Artist</th>
+                  <th class="album-col">Album</th>
+                  <th class="size-col">Size</th>
+                  <th class="opts-col">Opts</th>
                 </tr>
               </thead>
               <tbody id="albumRows">
                 <tr>
-                  <td colspan="5" class="empty">No albums loaded.</td>
+                  <td colspan="6" class="empty">No albums loaded.</td>
                 </tr>
               </tbody>
             </table>

@@ -422,6 +422,26 @@ dt,
   font-weight: 800;
 }
 
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.select-mode-btn {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  color: var(--quiet-button-text);
+  font-size: 12px;
+}
+
+.select-mode-btn.active {
+  border-color: var(--blue-border);
+  background: var(--blue-soft);
+  color: var(--blue-text);
+}
+
 .queue-controls {
   display: grid;
   flex: 0 0 auto;
@@ -496,6 +516,42 @@ dt,
   background: var(--surface);
 }
 
+.batch-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 30px;
+  margin: -2px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.batch-actions {
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.batch-actions::-webkit-scrollbar {
+  display: none;
+}
+
+.batch-actions button {
+  flex: 0 0 auto;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 9px;
+  color: var(--quiet-button-text);
+  font-size: 12px;
+}
+
 .table-wrap {
   flex: 1 1 auto;
   min-height: 0;
@@ -537,24 +593,38 @@ th {
   font-weight: 800;
 }
 
-th:nth-child(1),
-td:nth-child(1) {
+.select-col {
+  display: none;
+  width: 34px;
+  text-align: center;
+}
+
+.queue-pane.selecting .select-col {
+  display: table-cell;
+}
+
+.select-col input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--blue);
+  vertical-align: middle;
+}
+
+.status-col {
   width: 84px;
 }
 
-th:nth-child(2),
-td:nth-child(2) {
+.artist-col {
   width: 27%;
 }
 
-th:nth-child(4),
-td:nth-child(4) {
+.size-col {
   width: 90px;
   text-align: right;
 }
 
-th:nth-child(5),
-td:nth-child(5) {
+.opts-col {
   width: 46px;
   text-align: right;
 }
@@ -569,6 +639,10 @@ tbody tr:hover {
 
 tbody tr.selected {
   background: var(--row-selected);
+}
+
+tbody tr.batch-selected:not(.selected) {
+  background: var(--surface-soft);
 }
 
 .status-cell {
@@ -1766,6 +1840,23 @@ tbody tr.selected {
     font-size: 12px;
   }
 
+  .batch-bar {
+    align-items: flex-start;
+    flex-direction: column;
+    min-height: 0;
+    gap: 6px;
+  }
+
+  .batch-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .batch-actions button {
+    height: 30px;
+    min-height: 30px;
+  }
+
   .table-wrap {
     min-height: 0;
   }
@@ -1777,20 +1868,16 @@ tbody tr.selected {
     font-size: 12px;
   }
 
-  th:nth-child(1),
-  td:nth-child(1) {
+  .status-col {
     width: 72px;
   }
 
-  th:nth-child(2),
-  td:nth-child(2) {
+  .artist-col {
     width: 32%;
   }
 
-  th:nth-child(4),
-  td:nth-child(4),
-  th:nth-child(5),
-  td:nth-child(5) {
+  .size-col,
+  .opts-col {
     display: none;
   }
 

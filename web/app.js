@@ -4,6 +4,8 @@ const state = {
   query: "",
   albums: [],
   selectedKey: "",
+  selectedKeys: new Set(),
+  selectionMode: false,
   coverUrl: "",
   candidateUrl: "",
   candidates: [],
@@ -43,7 +45,17 @@ const el = {
   scanPanel: document.getElementById("scanPanel"),
   scanTitle: document.getElementById("scanTitle"),
   scanText: document.getElementById("scanText"),
+  queuePane: document.getElementById("queuePane"),
   shownCount: document.getElementById("shownCount"),
+  selectModeBtn: document.getElementById("selectModeBtn"),
+  batchBar: document.getElementById("batchBar"),
+  selectedCount: document.getElementById("selectedCount"),
+  batchSelectAllBtn: document.getElementById("batchSelectAllBtn"),
+  batchFindBtn: document.getElementById("batchFindBtn"),
+  batchConvertBtn: document.getElementById("batchConvertBtn"),
+  batchMarkGoodBtn: document.getElementById("batchMarkGoodBtn"),
+  batchSkipBtn: document.getElementById("batchSkipBtn"),
+  clearSelectionBtn: document.getElementById("clearSelectionBtn"),
   searchInput: document.getElementById("searchInput"),
   clearSearchBtn: document.getElementById("clearSearchBtn"),
   queueTableWrap: document.getElementById("queueTableWrap"),
@@ -320,6 +332,71 @@ function statusClass(album) {
 
 function selectedAlbum() {
   return state.albums.find((item) => item.album_key === state.selectedKey) || null;
+}
+
+function visibleAlbumKeys() {
+  return state.albums.map((album) => album.album_key).filter(Boolean);
+}
+
+function batchSelectedKeys() {
+  const visible = new Set(visibleAlbumKeys());
+  return Array.from(state.selectedKeys).filter((key) => visible.has(key));
+}
+
+function pruneBatchSelection() {
+  const visible = new Set(visibleAlbumKeys());
+  state.selectedKeys = new Set(Array.from(state.selectedKeys).filter((key) => visible.has(key)));
+}
+
+function updateBatchControls() {
+  const selected = batchSelectedKeys();
+  const selectedCount = selected.length;
+  const busy = Boolean(state.actionActive || state.scanActive);
+  const allVisible = visibleAlbumKeys();
+  const allSelected = allVisible.length > 0 && selectedCount === allVisible.length;
+
+  el.queuePane.classList.toggle("selecting", state.selectionMode);
+  el.batchBar.classList.toggle("hidden", !state.selectionMode);
+  el.selectModeBtn.textContent = state.selectionMode ? "Done" : "Select";
+  el.selectModeBtn.classList.toggle("active", state.selectionMode);
+  el.selectedCount.textContent = `${fmt(selectedCount)} selected`;
+  el.batchSelectAllBtn.textContent = allSelected ? "Clear Shown" : "All Shown";
+
+  [el.batchFindBtn, el.batchConvertBtn, el.batchMarkGoodBtn, el.batchSkipBtn, el.clearSelectionBtn].forEach((button) => {
+    button.disabled = busy || selectedCount === 0;
+  });
+  el.batchSelectAllBtn.disabled = busy || allVisible.length === 0;
+}
+
+function setSelectionMode(enabled) {
+  state.selectionMode = Boolean(enabled);
+  if (!state.selectionMode) {
+    state.selectedKeys.clear();
+  }
+  renderRows();
+}
+
+function toggleAlbumSelection(albumKey, checked) {
+  if (!albumKey) return;
+  if (checked) {
+    state.selectedKeys.add(albumKey);
+  } else {
+    state.selectedKeys.delete(albumKey);
+  }
+  renderRows();
+}
+
+function toggleAllShownSelection() {
+  const keys = visibleAlbumKeys();
+  if (!keys.length) return;
+  const selected = new Set(batchSelectedKeys());
+  const allSelected = keys.every((key) => selected.has(key));
+  if (allSelected) {
+    keys.forEach((key) => state.selectedKeys.delete(key));
+  } else {
+    keys.forEach((key) => state.selectedKeys.add(key));
+  }
+  renderRows();
 }
 
 function selectedCandidate() {
@@ -885,8 +962,10 @@ function showActivityPanel(title, text) {
 function jobTitle(job) {
   return {
     "artwork-search": "Searching artwork",
+    "batch-artwork-search": "Searching selected albums",
     "approve-embed": "Embedding artwork",
     "convert-current": "Converting current cover",
+    "batch-convert-current": "Converting selected albums",
     "restore-backup": "Restoring backup",
     "repair-queue": "Repairing queue",
     embed: "Embedding artwork",
@@ -991,6 +1070,7 @@ function updateActionButtons() {
   el.googleImagesBtn.disabled = !album;
   el.markGoodBtn.disabled = !album || busy;
   el.skipAlbumBtn.disabled = !album || busy;
+  updateBatchControls();
 }
 
 function renderReviewJob(status) {
@@ -1051,16 +1131,18 @@ async function refreshStatus() {
 function renderRows() {
   updateSearchControls();
   el.shownCount.textContent = `${fmt(state.albums.length)} shown`;
+  pruneBatchSelection();
   if (!state.albums.length) {
     const emptyText = state.query ? `No albums match "${state.query}".` : "No albums in this view.";
     el.albumRows.innerHTML = "";
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 5;
+    cell.colSpan = 6;
     cell.className = "empty";
     cell.textContent = emptyText;
     row.appendChild(cell);
     el.albumRows.appendChild(row);
+    updateBatchControls();
     return;
   }
   el.albumRows.innerHTML = "";
@@ -1069,17 +1151,35 @@ function renderRows() {
     const row = document.createElement("tr");
     row.dataset.albumKey = album.album_key;
     row.classList.toggle("selected", album.album_key === state.selectedKey);
+    row.classList.toggle("batch-selected", state.selectedKeys.has(album.album_key));
     row.setAttribute("aria-selected", album.album_key === state.selectedKey ? "true" : "false");
-    [album.status_label || "", album.artist || "", album.album || "", album.size_label || "", album.candidate_count || 0].forEach((value, index) => {
+
+    const selectCell = document.createElement("td");
+    selectCell.className = "select-col";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = state.selectedKeys.has(album.album_key);
+    checkbox.setAttribute("aria-label", `Select ${album.artist || "album"} - ${album.album || ""}`);
+    selectCell.appendChild(checkbox);
+    row.appendChild(selectCell);
+
+    [
+      { value: album.status_label || "", className: `status-col status-cell ${statusClass(album)}` },
+      { value: album.artist || "", className: "artist-col" },
+      { value: album.album || "", className: "album-col" },
+      { value: album.size_label || "", className: "size-col" },
+      { value: album.candidate_count || 0, className: "opts-col" },
+    ].forEach(({ value, className }) => {
       const cell = document.createElement("td");
       cell.title = value;
       cell.textContent = value;
-      if (index === 0) cell.className = `status-cell ${statusClass(album)}`;
+      cell.className = className;
       row.appendChild(cell);
     });
     fragment.appendChild(row);
   });
   el.albumRows.appendChild(fragment);
+  updateBatchControls();
 }
 
 async function refreshQueue(options = {}) {
@@ -1104,6 +1204,7 @@ async function refreshQueue(options = {}) {
     const signature = queueSignature(albums);
     const queueChanged = force || signature !== state.queueSignature || albums.length !== state.albums.length;
     state.albums = albums;
+    pruneBatchSelection();
     state.queueSignature = signature;
     setCounts(counts);
     if (!state.albums.find((album) => album.album_key === state.selectedKey)) {
@@ -1611,6 +1712,40 @@ async function runAlbumAction(path, message, options = {}) {
   }
 }
 
+async function runBatchAction(path, message, options = {}) {
+  const albumKeys = batchSelectedKeys();
+  const count = albumKeys.length;
+  if (!count) return;
+  const confirmText = typeof options.confirmText === "function" ? options.confirmText(count) : options.confirmText;
+  if (confirmText && !window.confirm(confirmText)) return;
+
+  state.actionActive = true;
+  el.actionMessage.textContent = options.start || message;
+  updateActionButtons();
+  try {
+    const payload = await api(path, {
+      method: "POST",
+      body: JSON.stringify({ album_keys: albumKeys }),
+    });
+    if (payload.job_id) {
+      setSelectionMode(false);
+      await refreshStatus();
+      scheduleTick(500);
+      return;
+    }
+    state.actionActive = false;
+    state.selectedKeys.clear();
+    state.selectionMode = false;
+    el.actionMessage.textContent = options.done || message;
+    await refreshQueue({ force: true, autoHandoff: true });
+    await refreshCandidates(selectedAlbum());
+  } catch (error) {
+    state.actionActive = false;
+    el.actionMessage.textContent = error.message || "Batch action failed.";
+    updateActionButtons();
+  }
+}
+
 function moveCandidate(delta) {
   if (!state.candidates.length) return;
   state.candidateIndex = (state.candidateIndex + delta + state.candidates.length) % state.candidates.length;
@@ -1772,7 +1907,35 @@ function bind() {
   el.googleImagesBtn.addEventListener("click", openGoogleImages);
   el.markGoodBtn.addEventListener("click", () => runAlbumAction("/api/album/mark-good", "Marked as good"));
   el.skipAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/skip", "Skipped for now"));
+  el.selectModeBtn.addEventListener("click", () => setSelectionMode(!state.selectionMode));
+  el.batchSelectAllBtn.addEventListener("click", toggleAllShownSelection);
+  el.clearSelectionBtn.addEventListener("click", () => {
+    state.selectedKeys.clear();
+    renderRows();
+  });
+  el.batchFindBtn.addEventListener("click", () => runBatchAction("/api/batch/artwork/search", "Searching selected albums", {
+    start: "Searching selected albums",
+  }));
+  el.batchConvertBtn.addEventListener("click", () => runBatchAction("/api/batch/convert-current", "Converting selected albums", {
+    start: "Converting selected albums",
+    confirmText: (count) => `Convert current artwork for ${fmt(count)} selected album${count === 1 ? "" : "s"}?`,
+  }));
+  el.batchMarkGoodBtn.addEventListener("click", () => runBatchAction("/api/batch/mark-good", "Marked selected albums as good", {
+    confirmText: (count) => `Mark ${fmt(count)} selected album${count === 1 ? "" : "s"} as good?`,
+    done: "Marked selected albums as good",
+  }));
+  el.batchSkipBtn.addEventListener("click", () => runBatchAction("/api/batch/skip", "Skipped selected albums", {
+    confirmText: (count) => `Skip ${fmt(count)} selected album${count === 1 ? "" : "s"} for now?`,
+    done: "Skipped selected albums",
+  }));
   el.albumRows.addEventListener("click", (event) => {
+    const checkbox = event.target.closest("input[type='checkbox']");
+    if (checkbox) {
+      const row = checkbox.closest("tr[data-album-key]");
+      if (row) toggleAlbumSelection(row.dataset.albumKey, checkbox.checked);
+      event.stopPropagation();
+      return;
+    }
     const row = event.target.closest("tr[data-album-key]");
     if (row) selectAlbum(row.dataset.albumKey, { focusQueue: true, openDetail: isPhoneLayout() });
   });

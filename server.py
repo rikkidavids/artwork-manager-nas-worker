@@ -35,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.47'
-APP_BUILD = '5.47'
+WORKER_BUILD = '5.48'
+APP_BUILD = '5.48'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -45,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.47 refreshes album rows from fresh file checks and fixes the artwork inspector fit view.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.48 adds queue selection mode and batch artwork actions.'
 )
 
 
@@ -259,7 +259,8 @@ def status_payload(public: bool = False) -> Dict[str, Any]:
             'POST /api/settings', 'POST /api/scan/start', 'POST /api/library/clear', 'POST /api/artwork/search',
             'POST /api/artwork/import', 'POST /api/artwork/approve', 'POST /api/artwork/convert-current',
             'POST /api/artwork/reject', 'POST /api/artwork/reject-all', 'POST /api/album/recheck', 'POST /api/album/skip',
-            'POST /api/album/mark-good', 'POST /api/backup/restore',
+            'POST /api/album/mark-good', 'POST /api/batch/artwork/search', 'POST /api/batch/convert-current',
+            'POST /api/batch/mark-good', 'POST /api/batch/skip', 'POST /api/backup/restore',
             'POST /api/maintenance/clean-stale-candidates', 'POST /api/maintenance/repair-queue',
             'POST /scan-library', 'POST /embed', 'POST /deep-check',
             'POST /path-check',
@@ -3255,7 +3256,7 @@ def web_album_simple_action(album_key: str, status: str, reason: str, action: st
     if not album:
         raise ValueError('Album not found')
     updates: Dict[str, Any] = {}
-    if action == 'web_mark_good':
+    if action in {'web_mark_good', 'web_batch_mark_good'}:
         settings = web_get_settings()
         updates[MANUAL_STATUS_OVERRIDE_KEY] = {
             'status': status,
@@ -3266,6 +3267,170 @@ def web_album_simple_action(album_key: str, status: str, reason: str, action: st
     web_set_album_status(album_key, status, reason, updates)
     web_add_history(album_key, action, {'status': status, 'reason': reason})
     return {'ok': True, 'album': web_get_album(album_key)}
+
+
+def web_payload_album_keys(payload: Dict[str, Any], max_items: int = 50000) -> List[str]:
+    raw = payload.get('album_keys') or payload.get('albums') or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise ValueError('Expected album_keys to be a list')
+    keys: List[str] = []
+    seen = set()
+    for value in raw:
+        key = str(value or '').strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+        if len(keys) >= max_items:
+            break
+    if not keys:
+        raise ValueError('Select at least one album')
+    return keys
+
+
+def web_albums_for_keys(album_keys: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    albums: List[Dict[str, Any]] = []
+    missing: List[str] = []
+    for album_key in album_keys:
+        album = web_get_album(album_key)
+        if album:
+            albums.append(album)
+        else:
+            missing.append(album_key)
+    if not albums:
+        raise ValueError('No selected albums were found in the database')
+    return albums, missing
+
+
+def web_batch_label(prefix: str, album: Dict[str, Any], index: int, total: int) -> str:
+    artist = str(album.get('artist') or '').strip()
+    title = str(album.get('album') or '').strip()
+    name = f'{artist} — {title}'.strip(' —') or 'album'
+    return f'{prefix} {index}/{total}: {name}'
+
+
+def start_web_batch_artwork_search(payload: Dict[str, Any]) -> Dict[str, Any]:
+    album_keys = web_payload_album_keys(payload)
+    albums, missing = web_albums_for_keys(album_keys)
+    web_block_if_busy('batch artwork search')
+    total = len(albums)
+    first = albums[0]
+    job_id, started_mono, _album_folder = begin_job('batch-artwork-search', {
+        'album_folder': first.get('album_path') or '',
+        'album_key': first.get('album_key') or '',
+        'artist': 'Selected albums',
+        'album': f'{total} artwork searches',
+    })
+    max_candidates = payload.get('max_candidates')
+
+    def worker() -> None:
+        checked = 0
+        changed = 0
+        saved_total = 0
+        failed: List[Dict[str, str]] = []
+        try:
+            for index, album in enumerate(albums, 1):
+                update_job(job_id, label=web_batch_label('Searching', album, index, total), checked=checked, total=total)
+                try:
+                    result = web_search_artwork_for_album(str(album.get('album_key') or ''), max_candidates=max_candidates, job_id=job_id)
+                    candidates = int(result.get('candidate_count') or 0)
+                    saved_ids = result.get('saved_candidate_ids') or []
+                    saved_total += len(saved_ids)
+                    if candidates:
+                        changed += 1
+                except Exception as exc:
+                    failed.append({'album_key': str(album.get('album_key') or ''), 'error': str(exc)})
+                checked += 1
+                update_job(job_id, checked=checked, total=total, changed=changed, failed=failed)
+            finish_job(job_id, started_mono, not failed, result={
+                'total': total,
+                'checked': checked,
+                'changed': changed,
+                'failed': failed,
+                'candidate_count': saved_total,
+                'missing_album_keys': missing,
+            })
+        except Exception as exc:
+            finish_job(job_id, started_mono, False, error=str(exc), result={
+                'total': total,
+                'checked': checked,
+                'changed': changed,
+                'failed': failed,
+                'missing_album_keys': missing,
+            })
+
+    threading.Thread(target=worker, name=f'ArtworkManagerBatchSearch-{job_id}', daemon=True).start()
+    return {'ok': True, 'job_id': job_id, 'total': total, 'missing_album_keys': missing, 'message': f'Artwork search started for {total} selected album(s).'}
+
+
+def start_web_batch_convert_current(payload: Dict[str, Any]) -> Dict[str, Any]:
+    album_keys = web_payload_album_keys(payload)
+    albums, missing = web_albums_for_keys(album_keys)
+    web_block_if_busy('batch convert current artwork')
+    total = len(albums)
+    first = albums[0]
+    job_id, started_mono, _album_folder = begin_job('batch-convert-current', {
+        'album_folder': first.get('album_path') or '',
+        'album_key': first.get('album_key') or '',
+        'artist': 'Selected albums',
+        'album': f'{total} current cover conversions',
+    })
+
+    def worker() -> None:
+        checked = 0
+        changed = 0
+        failed: List[Dict[str, str]] = []
+        try:
+            for index, album in enumerate(albums, 1):
+                update_job(job_id, label=web_batch_label('Converting', album, index, total), checked=checked, total=total)
+                try:
+                    result = web_convert_current_artwork(str(album.get('album_key') or ''), job_id=job_id)
+                    if result.get('ok') or result.get('status'):
+                        changed += 1
+                except Exception as exc:
+                    failed.append({'album_key': str(album.get('album_key') or ''), 'error': str(exc)})
+                checked += 1
+                update_job(job_id, checked=checked, total=total, changed=changed, failed=failed)
+            finish_job(job_id, started_mono, not failed, result={
+                'total': total,
+                'checked': checked,
+                'changed': changed,
+                'failed': failed,
+                'missing_album_keys': missing,
+            })
+        except Exception as exc:
+            finish_job(job_id, started_mono, False, error=str(exc), result={
+                'total': total,
+                'checked': checked,
+                'changed': changed,
+                'failed': failed,
+                'missing_album_keys': missing,
+            })
+
+    threading.Thread(target=worker, name=f'ArtworkManagerBatchConvert-{job_id}', daemon=True).start()
+    return {'ok': True, 'job_id': job_id, 'total': total, 'missing_album_keys': missing, 'message': f'Convert current artwork started for {total} selected album(s).'}
+
+
+def web_batch_album_simple_action(payload: Dict[str, Any], status: str, reason: str, action: str) -> Dict[str, Any]:
+    album_keys = web_payload_album_keys(payload)
+    web_block_if_busy('batch album action')
+    updated = 0
+    failed: List[Dict[str, str]] = []
+    for album_key in album_keys:
+        try:
+            web_album_simple_action(album_key, status, reason, action)
+            updated += 1
+        except Exception as exc:
+            failed.append({'album_key': album_key, 'error': str(exc)})
+    return {
+        'ok': not failed,
+        'total': len(album_keys),
+        'updated': updated,
+        'failed': failed,
+        'counts': web_queue_counts(),
+    }
 
 
 def web_current_artwork(album_key: str) -> Tuple[bytes, str]:
@@ -4365,6 +4530,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if route == '/api/artwork/reject-all':
                 result = web_reject_all_candidates(payload)
+                self._send(200, result)
+                return
+            if route == '/api/batch/artwork/search':
+                result = start_web_batch_artwork_search(payload)
+                self._send(200, result)
+                return
+            if route == '/api/batch/convert-current':
+                result = start_web_batch_convert_current(payload)
+                self._send(200, result)
+                return
+            if route == '/api/batch/mark-good':
+                result = web_batch_album_simple_action(payload, 'already_good', 'Marked good.', 'web_batch_mark_good')
+                self._send(200, result)
+                return
+            if route == '/api/batch/skip':
+                result = web_batch_album_simple_action(payload, 'reviewed_skipped', 'Skipped for now.', 'web_batch_skip')
                 self._send(200, result)
                 return
             if route == '/api/album/recheck':
