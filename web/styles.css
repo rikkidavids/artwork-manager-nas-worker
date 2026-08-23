@@ -448,6 +448,7 @@ dt,
 }
 
 .pane-actions {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -465,6 +466,65 @@ dt,
   border-color: var(--blue-border);
   background: var(--blue-soft);
   color: var(--blue-text);
+}
+
+.selected-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.batch-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.batch-menu-btn {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  color: var(--quiet-button-text);
+  font-size: 12px;
+}
+
+.batch-menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 12;
+  display: grid;
+  width: max-content;
+  min-width: 164px;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.batch-menu-panel button {
+  justify-content: flex-start;
+  width: 100%;
+  height: 30px;
+  min-height: 30px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+}
+
+.batch-menu-panel button:hover:not(:disabled),
+.batch-menu-panel button:focus-visible {
+  border-color: transparent;
+  background: var(--surface-soft);
+}
+
+.batch-menu-panel button:disabled {
+  background: transparent;
 }
 
 .queue-controls {
@@ -541,42 +601,6 @@ dt,
   background: var(--surface);
 }
 
-.batch-bar {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 30px;
-  margin: -2px 0 8px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.batch-actions {
-  display: flex;
-  flex: 1 1 auto;
-  justify-content: flex-end;
-  gap: 6px;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.batch-actions::-webkit-scrollbar {
-  display: none;
-}
-
-.batch-actions button {
-  flex: 0 0 auto;
-  height: 28px;
-  min-height: 28px;
-  padding: 0 9px;
-  color: var(--quiet-button-text);
-  font-size: 12px;
-}
-
 .table-wrap {
   flex: 1 1 auto;
   min-height: 0;
@@ -618,22 +642,26 @@ th {
   font-weight: 800;
 }
 
-.select-col {
-  display: none;
-  width: 34px;
-  text-align: center;
+.status-content {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
 }
 
-.queue-pane.selecting .select-col {
-  display: table-cell;
-}
-
-.select-col input {
+.status-content input {
+  flex: 0 0 auto;
   width: 16px;
   height: 16px;
   margin: 0;
   accent-color: var(--blue);
-  vertical-align: middle;
+}
+
+.status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-col {
@@ -1986,21 +2014,20 @@ tbody tr.batch-selected:not(.selected) {
     font-size: 12px;
   }
 
-  .batch-bar {
-    align-items: flex-start;
-    flex-direction: column;
-    min-height: 0;
-    gap: 6px;
+  .selected-count,
+  .batch-menu-btn,
+  .select-mode-btn {
+    font-size: 12px;
   }
 
-  .batch-actions {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .batch-actions button {
+  .batch-menu-btn,
+  .select-mode-btn {
     height: 30px;
     min-height: 30px;
+  }
+
+  .batch-menu-panel {
+    min-width: 156px;
   }
 
   .table-wrap {

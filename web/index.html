@@ -55,6 +55,18 @@
             </div>
             <div class="pane-actions">
               <span id="shownCount">0 shown</span>
+              <span id="selectedCount" class="selected-count hidden">0 selected</span>
+              <div id="batchMenu" class="batch-menu hidden">
+                <button id="batchMenuBtn" class="ghost batch-menu-btn" type="button" aria-haspopup="menu" aria-expanded="false">Actions</button>
+                <div id="batchMenuPanel" class="batch-menu-panel hidden" role="menu">
+                  <button id="batchSelectAllBtn" class="ghost" type="button" role="menuitem">All Shown</button>
+                  <button id="batchFindBtn" class="ghost" type="button" role="menuitem">Find Covers</button>
+                  <button id="batchConvertBtn" class="ghost" type="button" role="menuitem">Convert</button>
+                  <button id="batchMarkGoodBtn" class="ghost" type="button" role="menuitem">Mark Good</button>
+                  <button id="batchSkipBtn" class="ghost" type="button" role="menuitem">Skip</button>
+                  <button id="clearSelectionBtn" class="ghost" type="button" role="menuitem">Clear</button>
+                </div>
+              </div>
               <button id="selectModeBtn" class="ghost select-mode-btn" type="button">Select</button>
             </div>
           </div>
@@ -70,22 +82,10 @@
               <button class="chip" type="button" data-bucket="Done">Done</button>
             </div>
           </div>
-          <div id="batchBar" class="batch-bar hidden" aria-live="polite">
-            <span id="selectedCount">0 selected</span>
-            <div class="batch-actions">
-              <button id="batchSelectAllBtn" class="ghost" type="button">All Shown</button>
-              <button id="batchFindBtn" class="ghost" type="button">Find Covers</button>
-              <button id="batchConvertBtn" class="ghost" type="button">Convert</button>
-              <button id="batchMarkGoodBtn" class="ghost" type="button">Mark Good</button>
-              <button id="batchSkipBtn" class="ghost" type="button">Skip</button>
-              <button id="clearSelectionBtn" class="ghost" type="button">Clear</button>
-            </div>
-          </div>
           <div id="queueTableWrap" class="table-wrap" tabindex="0" role="region" aria-label="Album queue">
             <table>
               <thead>
                 <tr>
-                  <th class="select-col" aria-hidden="true"></th>
                   <th class="status-col">Status</th>
                   <th class="artist-col">Artist</th>
                   <th class="album-col">Album</th>
@@ -95,7 +95,7 @@
               </thead>
               <tbody id="albumRows">
                 <tr>
-                  <td colspan="6" class="empty">No albums loaded.</td>
+                  <td colspan="5" class="empty">No albums loaded.</td>
                 </tr>
               </tbody>
             </table>

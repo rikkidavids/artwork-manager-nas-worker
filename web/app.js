@@ -6,6 +6,7 @@ const state = {
   selectedKey: "",
   selectedKeys: new Set(),
   selectionMode: false,
+  batchMenuOpen: false,
   coverUrl: "",
   candidateUrl: "",
   candidates: [],
@@ -48,7 +49,9 @@ const el = {
   queuePane: document.getElementById("queuePane"),
   shownCount: document.getElementById("shownCount"),
   selectModeBtn: document.getElementById("selectModeBtn"),
-  batchBar: document.getElementById("batchBar"),
+  batchMenu: document.getElementById("batchMenu"),
+  batchMenuBtn: document.getElementById("batchMenuBtn"),
+  batchMenuPanel: document.getElementById("batchMenuPanel"),
   selectedCount: document.getElementById("selectedCount"),
   batchSelectAllBtn: document.getElementById("batchSelectAllBtn"),
   batchFindBtn: document.getElementById("batchFindBtn"),
@@ -357,22 +360,35 @@ function updateBatchControls() {
   const allSelected = allVisible.length > 0 && selectedCount === allVisible.length;
 
   el.queuePane.classList.toggle("selecting", state.selectionMode);
-  el.batchBar.classList.toggle("hidden", !state.selectionMode);
+  el.shownCount.classList.toggle("hidden", state.selectionMode);
+  el.selectedCount.classList.toggle("hidden", !state.selectionMode);
+  el.batchMenu.classList.toggle("hidden", !state.selectionMode);
   el.selectModeBtn.textContent = state.selectionMode ? "Done" : "Select";
   el.selectModeBtn.classList.toggle("active", state.selectionMode);
   el.selectedCount.textContent = `${fmt(selectedCount)} selected`;
   el.batchSelectAllBtn.textContent = allSelected ? "Clear Shown" : "All Shown";
+  el.batchMenuBtn.disabled = busy || allVisible.length === 0;
 
   [el.batchFindBtn, el.batchConvertBtn, el.batchMarkGoodBtn, el.batchSkipBtn, el.clearSelectionBtn].forEach((button) => {
     button.disabled = busy || selectedCount === 0;
   });
   el.batchSelectAllBtn.disabled = busy || allVisible.length === 0;
+  if (!state.selectionMode || busy || !allVisible.length) {
+    setBatchMenuOpen(false);
+  }
+}
+
+function setBatchMenuOpen(open) {
+  state.batchMenuOpen = Boolean(open && state.selectionMode);
+  el.batchMenuPanel.classList.toggle("hidden", !state.batchMenuOpen);
+  el.batchMenuBtn.setAttribute("aria-expanded", state.batchMenuOpen ? "true" : "false");
 }
 
 function setSelectionMode(enabled) {
   state.selectionMode = Boolean(enabled);
   if (!state.selectionMode) {
     state.selectedKeys.clear();
+    setBatchMenuOpen(false);
   }
   renderRows();
 }
@@ -397,6 +413,7 @@ function toggleAllShownSelection() {
   } else {
     keys.forEach((key) => state.selectedKeys.add(key));
   }
+  setBatchMenuOpen(false);
   renderRows();
 }
 
@@ -1158,7 +1175,7 @@ function renderRows() {
     el.albumRows.innerHTML = "";
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 6;
+    cell.colSpan = 5;
     cell.className = "empty";
     cell.textContent = emptyText;
     row.appendChild(cell);
@@ -1175,15 +1192,6 @@ function renderRows() {
     row.classList.toggle("batch-selected", state.selectedKeys.has(album.album_key));
     row.setAttribute("aria-selected", album.album_key === state.selectedKey ? "true" : "false");
 
-    const selectCell = document.createElement("td");
-    selectCell.className = "select-col";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = state.selectedKeys.has(album.album_key);
-    checkbox.setAttribute("aria-label", `Select ${album.artist || "album"} - ${album.album || ""}`);
-    selectCell.appendChild(checkbox);
-    row.appendChild(selectCell);
-
     [
       { value: album.status_label || "", className: `status-col status-cell ${statusClass(album)}` },
       { value: album.artist || "", className: "artist-col" },
@@ -1193,8 +1201,25 @@ function renderRows() {
     ].forEach(({ value, className }) => {
       const cell = document.createElement("td");
       cell.title = value;
-      cell.textContent = value;
       cell.className = className;
+      if (className.includes("status-cell")) {
+        const wrap = document.createElement("span");
+        const label = document.createElement("span");
+        wrap.className = "status-content";
+        label.className = "status-label";
+        label.textContent = value;
+        if (state.selectionMode) {
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.checked = state.selectedKeys.has(album.album_key);
+          checkbox.setAttribute("aria-label", `Select ${album.artist || "album"} - ${album.album || ""}`);
+          wrap.appendChild(checkbox);
+        }
+        wrap.appendChild(label);
+        cell.appendChild(wrap);
+      } else {
+        cell.textContent = value;
+      }
       row.appendChild(cell);
     });
     fragment.appendChild(row);
@@ -2001,9 +2026,14 @@ function bind() {
   el.markGoodBtn.addEventListener("click", () => runAlbumAction("/api/album/mark-good", "Marked as good"));
   el.skipAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/skip", "Skipped for now"));
   el.selectModeBtn.addEventListener("click", () => setSelectionMode(!state.selectionMode));
+  el.batchMenuBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setBatchMenuOpen(!state.batchMenuOpen);
+  });
   el.batchSelectAllBtn.addEventListener("click", toggleAllShownSelection);
   el.clearSelectionBtn.addEventListener("click", () => {
     state.selectedKeys.clear();
+    setBatchMenuOpen(false);
     renderRows();
   });
   el.batchFindBtn.addEventListener("click", () => runBatchAction("/api/batch/artwork/search", "Searching selected albums", {
@@ -2021,6 +2051,21 @@ function bind() {
     confirmText: (count) => `Skip ${fmt(count)} selected album${count === 1 ? "" : "s"} for now?`,
     done: "Skipped selected albums",
   }));
+  el.batchMenuPanel.addEventListener("click", (event) => {
+    if (event.target.closest("button")) {
+      setBatchMenuOpen(false);
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (!state.batchMenuOpen || event.target.closest("#batchMenu")) return;
+    setBatchMenuOpen(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !state.batchMenuOpen) return;
+    event.preventDefault();
+    setBatchMenuOpen(false);
+    el.batchMenuBtn.focus({ preventScroll: true });
+  });
   el.albumRows.addEventListener("click", (event) => {
     const checkbox = event.target.closest("input[type='checkbox']");
     if (checkbox) {
