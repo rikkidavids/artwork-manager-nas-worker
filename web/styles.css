@@ -640,21 +640,32 @@ th {
   z-index: 1;
   background: var(--table-head);
   font-weight: 800;
+  text-align: left;
 }
 
 .status-content {
   display: flex;
   align-items: center;
+  height: 100%;
   min-width: 0;
-  gap: 7px;
+  gap: 6px;
 }
 
-.status-content input {
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
+.status-content input[type="checkbox"] {
+  flex: 0 0 14px;
+  width: 14px;
+  min-width: 14px;
+  max-width: 14px;
+  height: 14px;
+  min-height: 14px;
+  max-height: 14px;
   margin: 0;
+  padding: 0;
   accent-color: var(--blue);
+}
+
+.queue-pane.selecting th.status-col {
+  padding-left: 27px;
 }
 
 .status-label {
@@ -2043,6 +2054,10 @@ tbody tr.batch-selected:not(.selected) {
 
   .status-col {
     width: 72px;
+  }
+
+  .queue-pane.selecting .status-col {
+    width: 82px;
   }
 
   .artist-col {
