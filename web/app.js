@@ -74,6 +74,7 @@ const el = {
   candidatePlaceholder: document.getElementById("candidatePlaceholder"),
   candidateMeta: document.getElementById("candidateMeta"),
   candidatePosition: document.getElementById("candidatePosition"),
+  candidateOptions: document.getElementById("candidateOptions"),
   summaryLead: document.getElementById("summaryLead"),
   detailStatus: document.getElementById("detailStatus"),
   detailReason: document.getElementById("detailReason"),
@@ -514,6 +515,26 @@ function candidateShortLabel(candidate) {
   const warnings = candidateWarnings(candidate);
   if (warnings.length) parts.push(warnings[0]);
   return parts.join(" - ") || "Candidate cover";
+}
+
+function candidateOptionMain(candidate, index) {
+  if (!candidate) return `Option ${index + 1}`;
+  const parts = [];
+  if (candidate.source) parts.push(candidate.source);
+  if (candidate.size_label) parts.push(candidate.size_label);
+  if (candidate.score || candidate.score === 0) parts.push(`${candidate.score}/100`);
+  return parts.join(" - ") || `Option ${index + 1}`;
+}
+
+function candidateOptionSub(candidate) {
+  if (!candidate) return "";
+  const warnings = candidateWarnings(candidate);
+  const pieces = [
+    candidate.release_title,
+    candidate.source_detail,
+    warnings[0],
+  ].map((piece) => String(piece || "").trim()).filter(Boolean);
+  return pieces[0] || "Saved cover option";
 }
 
 function candidateApprovalWarning(candidate) {
@@ -1304,6 +1325,7 @@ function renderCandidate() {
   const album = selectedAlbum();
   const mode = workflowMode(album);
   el.candidatePosition.textContent = state.candidates.length ? `${state.candidateIndex + 1} of ${state.candidates.length}` : "0 of 0";
+  renderCandidateOptions();
   if (!candidate) {
     if (mode === "done") {
       el.candidateMeta.textContent = "No replacement queued";
@@ -1327,6 +1349,56 @@ function renderCandidate() {
   }
   loadCandidateCover(candidate);
   updateActionButtons();
+}
+
+function renderCandidateOptions() {
+  if (!el.candidateOptions) return;
+  el.candidateOptions.innerHTML = "";
+  el.candidatePanel.classList.toggle("has-options", Boolean(state.candidates.length));
+  if (!state.candidates.length) {
+    el.candidateOptions.classList.add("hidden");
+    return;
+  }
+  el.candidateOptions.classList.remove("hidden");
+  state.candidates.forEach((candidate, index) => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "candidate-option";
+    option.dataset.candidateIndex = String(index);
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", index === state.candidateIndex ? "true" : "false");
+    option.title = candidateLabel(candidate);
+    option.classList.toggle("active", index === state.candidateIndex);
+
+    const main = document.createElement("span");
+    main.className = "candidate-option-main";
+    main.textContent = candidateOptionMain(candidate, index);
+
+    const sub = document.createElement("span");
+    sub.className = "candidate-option-sub";
+    sub.textContent = candidateOptionSub(candidate);
+
+    option.append(main, sub);
+    el.candidateOptions.appendChild(option);
+  });
+  scrollActiveCandidateOptionIntoView();
+}
+
+function scrollActiveCandidateOptionIntoView() {
+  const active = el.candidateOptions?.querySelector(".candidate-option.active");
+  if (!active || !el.candidateOptions) return;
+  const listRect = el.candidateOptions.getBoundingClientRect();
+  const activeRect = active.getBoundingClientRect();
+  if (activeRect.top < listRect.top) {
+    el.candidateOptions.scrollTop -= listRect.top - activeRect.top;
+  } else if (activeRect.bottom > listRect.bottom) {
+    el.candidateOptions.scrollTop += activeRect.bottom - listRect.bottom;
+  }
+}
+
+function focusActiveCandidateOption() {
+  const active = el.candidateOptions?.querySelector(".candidate-option.active");
+  if (active instanceof HTMLElement) active.focus({ preventScroll: true });
 }
 
 async function refreshCandidates(album, preferredCandidateId = null) {
@@ -1746,10 +1818,17 @@ async function runBatchAction(path, message, options = {}) {
   }
 }
 
-function moveCandidate(delta) {
+function selectCandidateIndex(index, options = {}) {
   if (!state.candidates.length) return;
-  state.candidateIndex = (state.candidateIndex + delta + state.candidates.length) % state.candidates.length;
+  const count = state.candidates.length;
+  state.candidateIndex = ((index % count) + count) % count;
   renderCandidate();
+  if (options.focusOption) window.requestAnimationFrame(focusActiveCandidateOption);
+}
+
+function moveCandidate(delta, options = {}) {
+  if (!state.candidates.length) return;
+  selectCandidateIndex(state.candidateIndex + delta, options);
 }
 
 function openSourcePage() {
@@ -1899,6 +1978,20 @@ function bind() {
   el.rejectAllBtn.addEventListener("click", rejectAllCandidates);
   el.prevCandidateBtn.addEventListener("click", () => moveCandidate(-1));
   el.nextCandidateBtn.addEventListener("click", () => moveCandidate(1));
+  el.candidateOptions.addEventListener("click", (event) => {
+    const option = event.target.closest("button[data-candidate-index]");
+    if (!option) return;
+    selectCandidateIndex(Number(option.dataset.candidateIndex), { focusOption: true });
+  });
+  el.candidateOptions.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+      event.preventDefault();
+      moveCandidate(1, { focusOption: true });
+    } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+      event.preventDefault();
+      moveCandidate(-1, { focusOption: true });
+    }
+  });
   el.importImageBtn.addEventListener("click", openImportImagePicker);
   el.importImageInput.addEventListener("change", () => importSelectedImage(el.importImageInput.files?.[0]));
   el.recheckAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/recheck", "Rechecked album", { start: "Rechecking this album" }));

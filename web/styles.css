@@ -804,6 +804,71 @@ tbody tr.batch-selected:not(.selected) {
   font-weight: 800;
 }
 
+#candidatePanel.has-options {
+  overflow: hidden;
+}
+
+.candidate-options {
+  display: grid;
+  flex: 0 1 112px;
+  min-height: 0;
+  max-height: 112px;
+  gap: 5px;
+  margin-top: 4px;
+  padding-right: 2px;
+  overflow-y: auto;
+}
+
+.candidate-option {
+  display: grid;
+  width: 100%;
+  height: auto;
+  min-height: 42px;
+  align-content: center;
+  gap: 1px;
+  padding: 6px 8px;
+  border-color: var(--line-soft);
+  border-radius: 7px;
+  background: var(--surface-soft);
+  color: var(--text);
+  text-align: left;
+}
+
+.candidate-option:hover {
+  border-color: var(--button-hover-line);
+}
+
+.candidate-option.active {
+  border-color: var(--blue-border);
+  background: var(--blue-soft);
+  color: var(--blue-text);
+}
+
+.candidate-option-main,
+.candidate-option-sub {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-option-main {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.candidate-option-sub {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.candidate-option.active .candidate-option-sub {
+  color: var(--blue-text);
+  opacity: 0.82;
+}
+
 .review-bottom {
   display: grid;
   flex: 1 1 auto;
@@ -1541,6 +1606,21 @@ tbody tr.batch-selected:not(.selected) {
     min-height: 20px;
   }
 
+  .candidate-options {
+    flex-basis: 62px;
+    max-height: 62px;
+    gap: 4px;
+  }
+
+  .candidate-option {
+    min-height: 29px;
+    padding: 4px 7px;
+  }
+
+  .candidate-option-sub {
+    display: none;
+  }
+
   .review-bottom {
     min-height: 118px;
     margin-top: 7px;
@@ -1919,6 +1999,11 @@ tbody tr.batch-selected:not(.selected) {
     flex-basis: 22px;
     min-height: 22px;
     font-size: 12px;
+  }
+
+  .candidate-options {
+    flex-basis: 104px;
+    max-height: 104px;
   }
 
   .art-panel {
