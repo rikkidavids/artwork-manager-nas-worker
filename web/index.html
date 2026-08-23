@@ -23,6 +23,15 @@
             <p id="workerSummary">Connecting to NAS...</p>
           </div>
         </div>
+        <div id="scanPanel" class="scan-panel hidden" aria-live="polite">
+          <div class="scan-copy">
+            <strong id="scanTitle">Scan running</strong>
+            <span id="scanText">Preparing scan</span>
+          </div>
+          <div class="scan-track" aria-hidden="true">
+            <div id="scanBar" class="scan-bar"></div>
+          </div>
+        </div>
         <div class="top-actions">
           <button id="refreshBtn" class="ghost" type="button">Refresh</button>
           <button id="settingsBtn" class="ghost" type="button">Settings</button>
@@ -36,16 +45,6 @@
           <p>Enter your NAS token in Settings to unlock this browser.</p>
         </div>
         <button id="unlockSettingsBtn" class="primary" type="button">Open Settings</button>
-      </section>
-
-      <section id="scanPanel" class="scan-panel hidden">
-        <div class="scan-copy">
-          <strong id="scanTitle">Scan running</strong>
-          <span id="scanText">Preparing scan...</span>
-        </div>
-        <div class="scan-track">
-          <div id="scanBar" class="scan-bar"></div>
-        </div>
       </section>
 
       <section class="workspace">
