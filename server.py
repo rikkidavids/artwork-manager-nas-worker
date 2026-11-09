@@ -35,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.53'
-APP_BUILD = '5.53'
+WORKER_BUILD = '5.54'
+APP_BUILD = '5.54'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -45,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.53 aligns the review panels and compacts the replacement option list.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.54 adds Discogs as an artwork source.'
 )
 
 
@@ -817,6 +817,8 @@ def web_default_settings() -> Dict[str, Any]:
         'deezer_enabled': web_bool(os.environ.get('AMW_DEEZER_ENABLED'), True),
         'itunes_enabled': web_bool(os.environ.get('AMW_ITUNES_ENABLED'), True),
         'musicbrainz_enabled': web_bool(os.environ.get('AMW_MUSICBRAINZ_ENABLED'), True),
+        'discogs_enabled': web_bool(os.environ.get('AMW_DISCOGS_ENABLED'), True),
+        'discogs_token': (os.environ.get('AMW_DISCOGS_TOKEN') or '').strip(),
         'theme_mode': os.environ.get('AMW_THEME_MODE') or 'Auto',
     }
 
@@ -850,6 +852,8 @@ def web_get_settings() -> Dict[str, Any]:
     settings['deezer_enabled'] = web_bool(settings.get('deezer_enabled'), True)
     settings['itunes_enabled'] = web_bool(settings.get('itunes_enabled'), True)
     settings['musicbrainz_enabled'] = web_bool(settings.get('musicbrainz_enabled'), True)
+    settings['discogs_enabled'] = web_bool(settings.get('discogs_enabled'), True)
+    settings['discogs_token'] = str(settings.get('discogs_token') or '').strip()
     theme = str(settings.get('theme_mode') or 'Auto').strip().lower()
     settings['theme_mode'] = {'light': 'Light', 'dark': 'Dark', 'auto': 'Auto'}.get(theme, 'Auto')
     return settings
@@ -874,11 +878,19 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
         'deezer_enabled',
         'itunes_enabled',
         'musicbrainz_enabled',
+        'discogs_enabled',
         'theme_mode',
     }
     for key in allowed:
         if key in payload:
             current[key] = payload.get(key)
+    # The token is never sent back to the browser, so a blank field means
+    # "keep the saved token". Clearing it needs an explicit request.
+    new_token = str(payload.get('discogs_token') or '').strip()
+    if new_token:
+        current['discogs_token'] = new_token
+    elif web_bool(payload.get('discogs_token_clear'), False):
+        current['discogs_token'] = ''
     current = {**web_default_settings(), **current}
     # Validate through the normal getter path by temporarily applying coercions here.
     current['resume_scans'] = web_bool(current.get('resume_scans'), True)
@@ -896,6 +908,8 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
     current['deezer_enabled'] = web_bool(current.get('deezer_enabled'), True)
     current['itunes_enabled'] = web_bool(current.get('itunes_enabled'), True)
     current['musicbrainz_enabled'] = web_bool(current.get('musicbrainz_enabled'), True)
+    current['discogs_enabled'] = web_bool(current.get('discogs_enabled'), True)
+    current['discogs_token'] = str(current.get('discogs_token') or '').strip()
     theme = str(current.get('theme_mode') or 'Auto').strip().lower()
     current['theme_mode'] = {'light': 'Light', 'dark': 'Dark', 'auto': 'Auto'}.get(theme, 'Auto')
     with db_connect() as conn:
@@ -904,6 +918,14 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
             (json.dumps(current), now()),
         )
     return current
+
+
+def web_public_settings(settings: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Settings safe to send to the browser: secrets replaced by a 'set' flag."""
+    out = dict(settings if settings is not None else web_get_settings())
+    out['discogs_token_set'] = bool(out.get('discogs_token'))
+    out['discogs_token'] = ''
+    return out
 
 
 def web_album_key(album_path: Any) -> str:
@@ -2892,6 +2914,124 @@ def web_musicbrainz_candidates(album: Dict[str, Any], max_candidates: int, setti
     return out[:max_candidates]
 
 
+DISCOGS_API = 'https://api.discogs.com'
+# Discogs allows 60 authenticated requests a minute, so only look inside the
+# best few matching releases rather than every search result.
+DISCOGS_MAX_RELEASE_LOOKUPS = 4
+
+
+def web_discogs_session(settings: Dict[str, Any]) -> requests.Session | None:
+    token = str(settings.get('discogs_token') or '').strip()
+    if not token:
+        return None
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': f'ArtworkManagerNAS/{WORKER_BUILD} +https://github.com/rikkidavids/artwork-manager-nas-worker',
+        'Accept': 'application/json',
+        'Authorization': f'Discogs token={token}',
+    })
+    return session
+
+
+def web_discogs_split_title(value: Any) -> Tuple[str, str]:
+    """Discogs search titles look like 'Artist - Album'."""
+    text = str(value or '')
+    if ' - ' in text:
+        artist, title = text.split(' - ', 1)
+        return artist.strip(), title.strip()
+    return '', text.strip()
+
+
+def web_discogs_release_images(session: requests.Session, release_id: Any) -> List[Dict[str, Any]]:
+    data = web_http_json(session, f'{DISCOGS_API}/releases/{release_id}', timeout=15)
+    images = data.get('images') if isinstance(data, dict) else None
+    out = []
+    for image in images or []:
+        if isinstance(image, dict) and image.get('uri'):
+            out.append(image)
+    # Primary (front cover) first, then the largest images.
+    out.sort(key=lambda img: (img.get('type') != 'primary', -int(img.get('width') or 0) * int(img.get('height') or 0)))
+    return out
+
+
+def web_discogs_candidates(album: Dict[str, Any], max_candidates: int, settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    session = web_discogs_session(settings)
+    if session is None:
+        return []
+    artist = album.get('search_artist') or album.get('artist') or ''
+    title = clean_album_name(album.get('search_album') or album.get('album') or '')
+    if not title:
+        return []
+    query = f'type=release&per_page=15&release_title={quote_plus(title)}'
+    if artist:
+        query += f'&artist={quote_plus(artist)}'
+    search_url = f'{DISCOGS_API}/database/search?{query}'
+    try:
+        probe = session.get(search_url, timeout=15)
+    except Exception as exc:
+        raise ValueError(f'Discogs could not be reached: {exc}') from exc
+    if probe.status_code == 401:
+        raise ValueError('Discogs rejected the saved token. Check it in Settings > Artwork.')
+    if probe.status_code == 200:
+        try:
+            data = probe.json()
+        except Exception:
+            data = None
+    else:
+        # 429/503 and friends: let the shared helper back off and retry.
+        data = web_http_json(session, search_url, timeout=15)
+    results = data.get('results') if isinstance(data, dict) else []
+    fetch_min = int(settings.get('scan_min_artwork_size') or settings.get('preferred_artwork_size') or 1000)
+    tolerance = target_tolerance(settings.get('target_size_match_mode'))
+    out: List[Dict[str, Any]] = []
+    seen_urls = set()
+    lookups = 0
+    for item in results or []:
+        if len(out) >= max_candidates or lookups >= DISCOGS_MAX_RELEASE_LOOKUPS:
+            break
+        if not isinstance(item, dict) or not item.get('id'):
+            continue
+        item_artist, item_title = web_discogs_split_title(item.get('title'))
+        item_year = str(item.get('year') or '')[:4]
+        if not web_release_matches(item_artist, item_title, item_year, album):
+            continue
+        lookups += 1
+        release_id = item.get('id')
+        images = web_discogs_release_images(session, release_id)
+        if not images and item.get('cover_image'):
+            images = [{'type': 'primary', 'uri': item.get('cover_image')}]
+        meta = {
+            'source_artist': item_artist,
+            'source_title': item_title,
+            'source_year': item_year,
+            'country': item.get('country') or '',
+            'format': ', '.join(str(x) for x in (item.get('format') or [])),
+            'label': ', '.join(str(x) for x in (item.get('label') or [])[:2]),
+            'source_page': f'https://www.discogs.com/release/{release_id}',
+        }
+        release_label = item_title + (f' ({item_year})' if item_year else '')
+        for image in images:
+            if len(out) >= max_candidates:
+                break
+            url = str(image.get('uri') or '')
+            if not url or 'spacer.gif' in url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            w, h = int(image.get('width') or 0), int(image.get('height') or 0)
+            # Skip downloads Discogs already tells us are too small.
+            if w and h and not scan_artwork_meets_target_size(w, h, fetch_min, tolerance):
+                continue
+            detail = 'Front cover' if image.get('type') == 'primary' else 'Release image'
+            extra = ' / '.join(x for x in (meta['country'], meta['format']) if x)
+            cand = web_download_candidate_image(
+                session, album, 'Discogs', f'{detail}{" - " + extra if extra else ""}', url,
+                release_label, f'discogs:{release_id}', meta, settings, len(out) + 1,
+            )
+            if cand:
+                out.append(cand)
+    return out
+
+
 def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job_id: str = '') -> Dict[str, Any]:
     album = web_get_album(album_key)
     if not album:
@@ -2912,6 +3052,8 @@ def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job
         providers.append(('iTunes', web_itunes_candidates))
     if web_bool(settings.get('musicbrainz_enabled'), True):
         providers.append(('MusicBrainz', web_musicbrainz_candidates))
+    if web_bool(settings.get('discogs_enabled'), True) and settings.get('discogs_token'):
+        providers.append(('Discogs', web_discogs_candidates))
     if not providers:
         web_set_album_status(album_key, 'no_candidate', 'No artwork providers are enabled.')
         return {'ok': True, 'candidate_count': len(existing), 'candidates': [web_public_candidate(c) for c in existing], 'message': 'No artwork providers are enabled.'}
@@ -3522,7 +3664,7 @@ def web_status_payload() -> Dict[str, Any]:
         'counts': web_queue_counts(),
         'music_roots': [str(path) for path in MUSIC_ROOTS],
         'backup_root': str(BACKUP_ROOT),
-        'settings': web_get_settings(),
+        'settings': web_public_settings(),
         'token_required': bool(API_TOKEN),
     }
     return payload
@@ -4394,7 +4536,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, {
                 'ok': True,
-                'settings': web_get_settings(),
+                'settings': web_public_settings(),
                 'music_roots': [str(path) for path in MUSIC_ROOTS],
                 'backup_root': str(BACKUP_ROOT),
                 'data_root': str(DATA_ROOT),
@@ -4498,7 +4640,7 @@ class Handler(BaseHTTPRequestHandler):
             route = urlparse(route).path.rstrip('/')
             if route == '/api/settings':
                 settings = web_save_settings(payload)
-                self._send(200, {'ok': True, 'settings': settings, 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                self._send(200, {'ok': True, 'settings': web_public_settings(settings), 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
                 return
             if route == '/api/scan/start':
                 result = start_web_scan(payload)
