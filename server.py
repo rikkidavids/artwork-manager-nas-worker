@@ -35,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.54'
-APP_BUILD = '5.54'
+WORKER_BUILD = '5.55'
+APP_BUILD = '5.55'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -45,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.54 adds Discogs as an artwork source.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.55 fixes multi-disc scanning and reports unreachable artwork sources.'
 )
 
 
@@ -71,7 +71,11 @@ PORT = int(os.environ.get('AMW_PORT') or '8765')
 SERVER_STARTED_AT = time.monotonic()
 RECENT_JOBS = deque(maxlen=int(os.environ.get('AMW_RECENT_JOBS') or '50'))
 ACTIVE_JOBS = {}
-ACTIVE_ALBUMS = set()
+# album folder -> kinds of the jobs currently working on it
+ACTIVE_ALBUMS: Dict[str, List[str]] = {}
+# A cover that is already saved can be approved while the same album is still
+# searching for more options; the search then leaves the finished album alone.
+JOBS_ALLOWED_DURING_SEARCH = {'approve-embed'}
 JOB_LOCK = threading.RLock()
 
 
@@ -145,9 +149,11 @@ def begin_job(kind: str, payload: Dict[str, Any]) -> Tuple[str, float, str]:
         'ok': None,
     }
     with JOB_LOCK:
-        if album_folder in ACTIVE_ALBUMS:
+        running = ACTIVE_ALBUMS.get(album_folder) or []
+        overlap_ok = bool(running) and kind in JOBS_ALLOWED_DURING_SEARCH and all(k == 'artwork-search' for k in running)
+        if running and not overlap_ok:
             raise WorkerBusyError(f'Album is already being processed by the NAS worker: {album_folder}')
-        ACTIVE_ALBUMS.add(album_folder)
+        ACTIVE_ALBUMS.setdefault(album_folder, []).append(kind)
         ACTIVE_JOBS[job_id] = record
     return job_id, started_mono, album_folder
 
@@ -179,7 +185,11 @@ def finish_job(job_id: str, started_mono: float, ok: bool, result: Dict[str, Any
         record = ACTIVE_JOBS.pop(job_id, None) or {'job_id': job_id}
         album_folder = record.get('album_folder') or ''
         if album_folder:
-            ACTIVE_ALBUMS.discard(album_folder)
+            kinds = ACTIVE_ALBUMS.get(album_folder) or []
+            if record.get('kind') in kinds:
+                kinds.remove(record.get('kind'))
+            if not kinds:
+                ACTIVE_ALBUMS.pop(album_folder, None)
         record.pop('_started_mono', None)
         record.update(summary)
         record['ok'] = bool(ok)
@@ -588,6 +598,23 @@ def inspect_album_identity(folder: Path, library_root: Path, music_names: List[s
             'tag_year': year_from_tags,
         },
     }
+
+
+def album_music_relpaths(album_folder: Path) -> List[str]:
+    """Every supported track in an album, relative to the album folder.
+
+    Multi-disc albums keep tracks in subfolders (Album/CD1, Album/CD2). Scans,
+    track counts and change detection must see all of them, or an album whose
+    first disc is fine is marked Good while a later disc has no artwork.
+    """
+    out: List[str] = []
+    for root_text, dirs, files in os.walk(album_folder):
+        dirs[:] = sort_names([d for d in dirs if not d.startswith('.') and d != '@eaDir'])
+        for name in sort_names(files):
+            if name.startswith('._') or not str(name).lower().endswith(MUSIC_EXTENSIONS):
+                continue
+            out.append(os.path.relpath(os.path.join(root_text, name), str(album_folder)))
+    return out
 
 
 def get_album_path(folder: Path, library_root: Path) -> Path:
@@ -2366,19 +2393,40 @@ def web_quality_for_image(path: Path, width: int, height: int, target_size: int)
     return {'warnings': warnings, 'score': score, 'score_summary': summary}
 
 
-def web_http_json(session: requests.Session, url: str, timeout: int = 12) -> Dict[str, Any] | None:
+class SourceUnreachable(Exception):
+    """An artwork source could not be contacted (network down, DNS, timeout)."""
+
+
+def web_http_json(session: requests.Session, url: str, timeout: int = 12, raise_unreachable: bool = False) -> Dict[str, Any] | None:
+    """GET JSON with retries. Returns None for 'no usable answer'.
+
+    With raise_unreachable, a source that never answered at all raises
+    SourceUnreachable, so a search can tell 'offline' apart from 'no covers'.
+    """
+    network_error: Exception | None = None
     for attempt in range(3):
         try:
             response = session.get(url, timeout=timeout)
-            if response.status_code in (429, 503):
-                time.sleep(1.2 * (attempt + 1))
-                continue
-            if response.status_code != 200:
-                return None
-            data = response.json()
-            return data if isinstance(data, dict) else None
+        except requests.RequestException as exc:
+            network_error = exc
+            time.sleep(0.8 * (attempt + 1))
+            continue
         except Exception:
             time.sleep(0.8 * (attempt + 1))
+            continue
+        network_error = None
+        if response.status_code in (429, 503):
+            time.sleep(1.2 * (attempt + 1))
+            continue
+        if response.status_code != 200:
+            return None
+        try:
+            data = response.json()
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+    if raise_unreachable and network_error is not None:
+        raise SourceUnreachable(str(network_error))
     return None
 
 
@@ -2570,7 +2618,7 @@ def web_deezer_candidates(album: Dict[str, Any], max_candidates: int, settings: 
     term = quote_plus(' '.join(x for x in (artist, clean_album_name(title)) if x).strip())
     if not term:
         return []
-    data = web_http_json(session, f'https://api.deezer.com/search/album?q={term}&limit=15')
+    data = web_http_json(session, f'https://api.deezer.com/search/album?q={term}&limit=15', raise_unreachable=True)
     results = data.get('data') if isinstance(data, dict) else []
     out: List[Dict[str, Any]] = []
     seen_urls = set()
@@ -2638,7 +2686,7 @@ def web_itunes_candidates(album: Dict[str, Any], max_candidates: int, settings: 
     term = quote_plus(' '.join(x for x in (artist, clean_album_name(title)) if x).strip())
     if not term:
         return []
-    data = web_http_json(session, f'https://itunes.apple.com/search?term={term}&media=music&entity=album&limit=15')
+    data = web_http_json(session, f'https://itunes.apple.com/search?term={term}&media=music&entity=album&limit=15', raise_unreachable=True)
     results = data.get('results') if isinstance(data, dict) else []
     out: List[Dict[str, Any]] = []
     seen_urls = set()
@@ -2804,7 +2852,7 @@ def web_mb_search_releases(session: requests.Session, artist: Any, title: Any, y
     releases = []
     seen_ids = set()
     for query in queries:
-        data = web_http_json(session, f'https://musicbrainz.org/ws/2/release/?query={quote(query)}&fmt=json&limit={int(limit)}')
+        data = web_http_json(session, f'https://musicbrainz.org/ws/2/release/?query={quote(query)}&fmt=json&limit={int(limit)}', raise_unreachable=True)
         for release in (data or {}).get('releases') or []:
             mbid = release.get('id')
             if not mbid or mbid in seen_ids:
@@ -2968,8 +3016,8 @@ def web_discogs_candidates(album: Dict[str, Any], max_candidates: int, settings:
     search_url = f'{DISCOGS_API}/database/search?{query}'
     try:
         probe = session.get(search_url, timeout=15)
-    except Exception as exc:
-        raise ValueError(f'Discogs could not be reached: {exc}') from exc
+    except requests.RequestException as exc:
+        raise SourceUnreachable(f'Discogs could not be reached: {exc}') from exc
     if probe.status_code == 401:
         raise ValueError('Discogs rejected the saved token. Check it in Settings > Artwork.')
     if probe.status_code == 200:
@@ -3032,6 +3080,15 @@ def web_discogs_candidates(album: Dict[str, Any], max_candidates: int, settings:
     return out
 
 
+WEB_SOURCE_LABELS = {'iTunes': 'Apple/iTunes'}
+
+
+def web_album_finished(album_key: str) -> bool:
+    with db_connect() as conn:
+        row = conn.execute('SELECT status FROM albums WHERE album_key=?', (album_key,)).fetchone()
+    return bool(row and str(row['status'] or '') in DONE_STATUSES)
+
+
 def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job_id: str = '') -> Dict[str, Any]:
     album = web_get_album(album_key)
     if not album:
@@ -3060,6 +3117,8 @@ def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job
 
     provider_limit = max(1, target_total - len(existing))
     fetched: List[Dict[str, Any]] = []
+    unreachable: List[str] = []
+    failed: List[str] = []
     max_workers = max(1, min(len(providers), int(settings.get('parallel_provider_workers') or 2)))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
@@ -3069,11 +3128,25 @@ def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job
         for future, name in list(futures.items()):
             try:
                 items = future.result()
+            except SourceUnreachable as exc:
+                unreachable.append(WEB_SOURCE_LABELS.get(name, name))
+                update_job(job_id, last_provider_error=f'{name}: {exc}')
+                items = []
             except Exception as exc:
+                failed.append(f'{WEB_SOURCE_LABELS.get(name, name)}: {exc}')
                 update_job(job_id, last_provider_error=f'{name}: {exc}')
                 items = []
             fetched.extend(items or [])
             update_job(job_id, candidate_count=len(existing) + len(fetched), last_provider=name)
+
+    if web_album_finished(album_key):
+        # Approved (or marked good/skipped) while this search was running:
+        # don't add options or move it back to Review.
+        for cand in fetched:
+            web_cleanup_candidate_file(cand)
+        update_job(job_id, candidate_count=0, finished_during_search=True)
+        return {'ok': True, 'candidate_count': 0, 'saved_candidate_ids': [], 'finished_during_search': True,
+                'unreachable_sources': unreachable, 'failed_sources': failed, 'candidates': []}
 
     known_urls = {str(c.get('source_url') or '') for c in web_list_candidates(album_key, include_rejected=True)}
     saved_ids = []
@@ -3094,15 +3167,31 @@ def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job
             web_cleanup_candidate_file(cand)
 
     candidates = web_list_candidates(album_key, include_rejected=False)
+    if web_album_finished(album_key):
+        update_job(job_id, candidate_count=len(candidates), finished_during_search=True)
+        return {'ok': True, 'candidate_count': len(candidates), 'saved_candidate_ids': saved_ids, 'finished_during_search': True,
+                'unreachable_sources': unreachable, 'failed_sources': failed, 'candidates': [web_public_candidate(c) for c in candidates]}
+    search_notes = {
+        'last_search_at': now(),
+        'last_search_saved': len(saved_ids),
+        # Always overwritten, so a later successful search clears old warnings.
+        'last_search_unreachable': unreachable,
+        'last_search_failed': failed,
+        'last_search_all_failed': bool(providers) and len(unreachable) + len(failed) >= len(providers),
+    }
     if candidates:
         reason = f'{len(candidates)} artwork option(s) ready.'
-        web_set_album_status(album_key, 'candidate_found', reason, {'last_search_at': now(), 'last_search_saved': len(saved_ids)})
+        web_set_album_status(album_key, 'candidate_found', reason, search_notes)
+    elif search_notes['last_search_all_failed']:
+        reason = 'No artwork sources could be reached. Check the NAS internet connection, then search again.'
+        web_set_album_status(album_key, 'no_candidate', reason, search_notes)
     else:
         reason = 'No suitable artwork found. Try Google Images or lower the minimum artwork size.'
-        web_set_album_status(album_key, 'no_candidate', reason, {'last_search_at': now(), 'last_search_saved': 0})
+        web_set_album_status(album_key, 'no_candidate', reason, search_notes)
     web_add_history(album_key, 'web_artwork_search', {'saved_candidate_ids': saved_ids, 'candidate_count': len(candidates)})
-    update_job(job_id, candidate_count=len(candidates), saved_candidate_ids=saved_ids)
-    return {'ok': True, 'candidate_count': len(candidates), 'saved_candidate_ids': saved_ids, 'candidates': [web_public_candidate(c) for c in candidates]}
+    update_job(job_id, candidate_count=len(candidates), saved_candidate_ids=saved_ids, unreachable_sources=unreachable)
+    return {'ok': True, 'candidate_count': len(candidates), 'saved_candidate_ids': saved_ids, 'unreachable_sources': unreachable,
+            'failed_sources': failed, 'candidates': [web_public_candidate(c) for c in candidates]}
 
 
 def start_web_artwork_search(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -3180,6 +3269,7 @@ def web_approve_candidate(album_key: str, candidate_id: Any, job_id: str = '') -
         'last_approval': {
             'candidate_id': int(candidate_id),
             'source': candidate.get('source') or '',
+            'release_title': candidate.get('release_title') or '',
             'score': int(candidate.get('score') or 0),
             'width': candidate.get('width'),
             'height': candidate.get('height'),
@@ -3655,6 +3745,23 @@ def start_web_scan(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+PLACEHOLDER_TOKENS = {'change-me', 'changeme', 'use-a-private-token-here', 'password', 'token', 'secret'}
+
+
+def token_warning() -> str:
+    """Plain-language warning when the API token doesn't protect anything."""
+    token = (API_TOKEN or '').strip()
+    if not token:
+        return ('No access token is set, so anyone on your network can change your music files. '
+                'Set AMW_TOKEN in .env and recreate the container.')
+    if token.lower() in PLACEHOLDER_TOKENS:
+        return (f'Your access token is still the placeholder "{token}", so anyone on your network could change '
+                'your music files. Set a private AMW_TOKEN in .env and recreate the container.')
+    if len(token) < 12:
+        return 'Your access token is very short and easy to guess. Use at least 12 characters for AMW_TOKEN in .env.'
+    return ''
+
+
 def web_status_payload() -> Dict[str, Any]:
     payload = status_payload(public=False)
     payload['web_app'] = {
@@ -3666,6 +3773,7 @@ def web_status_payload() -> Dict[str, Any]:
         'backup_root': str(BACKUP_ROOT),
         'settings': web_public_settings(),
         'token_required': bool(API_TOKEN),
+        'token_warning': token_warning(),
     }
     return payload
 
@@ -3988,7 +4096,12 @@ def deep_check(album_folder: Path, target_size: int, problem_files: bool = False
             result['first_issue'] = issue
 
     for fp in files:
-        fn = fp.name
+        # Keep the disc folder in the name (CD2/01 Track.flac) so multi-disc
+        # albums don't list two identical-looking '01 Track.flac' problems.
+        try:
+            fn = str(fp.relative_to(album_folder))
+        except ValueError:
+            fn = fp.name
         issues = []
         result['checked_files'] += 1
         arts = embedded_artwork(fp)
@@ -4315,6 +4428,17 @@ def scan_library_job(payload: Dict[str, Any], job_id: str = '') -> Dict[str, Any
             if album_path_key in submitted_paths:
                 continue
             submitted_paths.add(album_path_key)
+            if dirs or path_resume_key(folder) != album_path_key:
+                # Disc subfolders: treat the whole album folder as one unit.
+                # Plain single-folder albums skip this, so their saved
+                # fingerprints stay identical and they are not rescanned.
+                try:
+                    album_music = album_music_relpaths(album_path)
+                    album_files = sort_names(os.listdir(album_path))
+                except OSError:
+                    album_music = []
+                if album_music:
+                    folder, music, files = album_path, album_music, album_files
             if max_albums and processed >= max_albums:
                 break
             processed += 1
@@ -4774,4 +4898,6 @@ if __name__ == '__main__':
     print('Music roots: ' + ', '.join(str(x) for x in MUSIC_ROOTS), flush=True)
     print(f'Web UI: http://{HOST}:{PORT}/app/  Data: {DATA_ROOT}', flush=True)
     print(UPDATE_HINT, flush=True)
+    if token_warning():
+        print('WARNING: ' + token_warning(), flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
