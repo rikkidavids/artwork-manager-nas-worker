@@ -15,6 +15,9 @@ const state = {
   candidateIndex: 0,
   scanActive: false,
   actionActive: false,
+  activeJobs: [],
+  advanceAfterKey: "",
+  settingsTab: "general",
   settings: {},
   settingsLoaded: false,
   settingsDirty: false,
@@ -135,6 +138,11 @@ const el = {
   settingDiscogsToken: document.getElementById("settingDiscogsToken"),
   settingDiscogsTokenStatus: document.getElementById("settingDiscogsTokenStatus"),
   settingDiscogsTokenClear: document.getElementById("settingDiscogsTokenClear"),
+  actionsPanel: document.getElementById("actionsPanel"),
+  tokenWarning: document.getElementById("tokenWarning"),
+  tokenWarningText: document.getElementById("tokenWarningText"),
+  hideTokenWarningBtn: document.getElementById("hideTokenWarningBtn"),
+  moreActionsBtn: document.getElementById("moreActionsBtn"),
   settingMaxCandidates: document.getElementById("settingMaxCandidates"),
   settingProviderWorkers: document.getElementById("settingProviderWorkers"),
   settingToken: document.getElementById("settingToken"),
@@ -206,6 +214,13 @@ function shortProblemPath(path) {
   const bits = String(path || "").split("/").filter(Boolean);
   if (!bits.length) return "Unknown file";
   return bits.slice(-2).join("/");
+}
+
+function formatShortDate(value) {
+  const date = new Date(value || "");
+  if (!value || Number.isNaN(date.getTime())) return "";
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }) }).format(date);
 }
 
 function formatDateTime(value) {
@@ -286,7 +301,16 @@ function checkedLabel(album) {
 
 function currentCoverLabel(album, hasReadableCover = false) {
   if (!album) return "No cover selected";
-  if (hasReadableCover) return album.size_label || "Current cover";
+  if (hasReadableCover) {
+    const size = album.size_label || "Current cover";
+    const approval = album.notes?.last_approval;
+    // On finished albums, say where the cover came from and when.
+    if (isDoneAlbum(album) && approval?.source) {
+      const when = formatShortDate(approval.approved_at);
+      return `${size} - from ${approval.source}${when ? `, ${when}` : ""}`;
+    }
+    return size;
+  }
   if (album.status === "missing_artwork") return "Missing embedded artwork";
   if (album.status === "incompatible_artwork") return "Needs conversion";
   if (album.status === "not_square_artwork") return "Not square";
@@ -333,7 +357,9 @@ function queueSignature(albums) {
 function statusClass(album) {
   if (!album) return "";
   if (isDoneAlbum(album)) return "good";
-  if (album.status === "missing_artwork" || album.status === "incompatible_artwork") return "issue";
+  // Missing art is the real problem; a cover that only needs converting is a
+  // one-click fix, so it shares the amber 'needs work' colour.
+  if (album.status === "missing_artwork") return "issue";
   if (album.bucket === "Needs Work") return "work";
   return "";
 }
@@ -486,14 +512,75 @@ function keyAfterSelected() {
 
 function rememberNextSelection() {
   state.preferredNextKey = keyAfterSelected();
+  // If this action finishes the album, move on to the next one that still
+  // needs work, even in views (like All) where finished albums stay listed.
+  state.advanceAfterKey = state.selectedKey || "";
+}
+
+const SHORTCUT_BUTTONS = {
+  f: "findArtworkBtn",
+  a: "approveEmbedBtn",
+  r: "rejectCandidateBtn",
+  s: "skipAlbumBtn",
+  c: "convertCurrentBtn",
+};
+
+function nextActionableKey(fromKey) {
+  const list = state.albums || [];
+  const start = list.findIndex((album) => album.album_key === fromKey);
+  const ordered = start < 0 ? list : [...list.slice(start + 1), ...list.slice(0, start)];
+  return ordered.find((album) => album.bucket !== "Done" && album.album_key !== fromKey)?.album_key || "";
+}
+
+function albumHasJob(key) {
+  const jobs = Array.isArray(state.activeJobs) ? state.activeJobs : [];
+  return jobs.some((job) => job && job.album_key === key);
+}
+
+// Called after each queue refresh. Returns true if the selection moved.
+function advanceAfterFinishedAlbum() {
+  const key = state.advanceAfterKey;
+  if (!key) return false;
+  if (state.selectedKey !== key) {
+    state.advanceAfterKey = ""; // the user picked another album themselves
+    return false;
+  }
+  const album = state.albums.find((item) => item.album_key === key);
+  if (album && album.bucket === "Done") {
+    state.advanceAfterKey = "";
+    const next = nextActionableKey(key);
+    if (next) {
+      state.selectedKey = next;
+      return true;
+    }
+    return false;
+  }
+  // Still working, or the action left it unfinished (for example a failed embed).
+  if (!albumHasJob(key) && !state.actionActive) state.advanceAfterKey = "";
+  return false;
+}
+
+function unreachableSourceText(album) {
+  const notes = album?.notes || {};
+  const names = Array.isArray(notes.last_search_unreachable) ? notes.last_search_unreachable.filter(Boolean) : [];
+  if (!names.length) return "";
+  const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0];
+  if (notes.last_search_all_failed) {
+    return `Last search couldn't reach ${list}. Check the NAS internet connection, then search again.`;
+  }
+  return `Last search couldn't reach ${list}, so there may be more covers to find.`;
 }
 
 function idleActionMessage(album = selectedAlbum()) {
   if (!album) return "Select an album to begin";
   const mode = workflowMode(album);
   if (mode === "done") return "Current cover is good";
+  const unreachable = unreachableSourceText(album);
+  if (unreachable) return unreachable;
   if (mode === "review" && selectedCandidate()) return "Review this cover, then approve or reject it.";
   if (mode === "review") return "Search again to add cover options.";
+  if (album.status === "incompatible_artwork") return "This cover only needs converting. Convert Current fixes it in one step.";
+  if (album.status === "not_square_artwork") return "Convert Current pads this cover to a square, or find a better one.";
   return "Find artwork, then approve the best cover.";
 }
 
@@ -598,6 +685,11 @@ function settingsTitle(tab) {
   }[tab] || "Settings";
 }
 
+function syncSaveButtonVisibility() {
+  const toolsOnly = ["safety", "maintenance"].includes(state.settingsTab);
+  el.saveSettingsBtn.classList.toggle("hidden", toolsOnly && !state.settingsDirty);
+}
+
 function setSettingsTab(tab) {
   document.querySelectorAll(".settings-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.settingsTab === tab);
@@ -606,6 +698,10 @@ function setSettingsTab(tab) {
     panel.classList.toggle("active", panel.dataset.settingsPanel === tab);
   });
   el.settingsPanelTitle.textContent = settingsTitle(tab);
+  // These tabs only hold one-off tools, so Save has nothing to do there
+  // (unless changes from another tab are still waiting to be saved).
+  state.settingsTab = tab;
+  syncSaveButtonVisibility();
   if (tab === "safety") {
     loadBackupHistory();
   }
@@ -624,6 +720,7 @@ function setSettingsDirty(dirty = true) {
   if (state.settingsDirty) {
     settingsMessage("Unsaved changes", "warn");
   }
+  syncSaveButtonVisibility();
 }
 
 function setSettingsSaving(saving) {
@@ -1067,11 +1164,41 @@ function renderScan(status) {
   showActivityPanel("Scan running", bits.join(" - ") + (latest ? ` - Now ${shortPath(latest)}` : ""));
 }
 
+// Which running jobs affect this album? The NAS locks albums one at a time, so
+// work on one album should not grey out every other album's buttons.
+function albumJobState(album = selectedAlbum()) {
+  const jobs = Array.isArray(state.activeJobs) ? state.activeJobs : [];
+  const key = album?.album_key || "";
+  let busy = Boolean(state.scanActive);
+  let searching = false;
+  // A click is on its way to the NAS but no job is reported yet.
+  if (state.actionActive && !jobs.length) busy = true;
+  for (const job of jobs) {
+    if (!job) continue;
+    if (!job.album_key) {
+      busy = true; // queue-wide work such as batch actions or repairs
+    } else if (job.album_key === key) {
+      if (job.kind === "artwork-search") searching = true;
+      else busy = true;
+    }
+  }
+  return { busy, searching };
+}
+
+function jobForSelectedAlbum() {
+  const jobs = Array.isArray(state.activeJobs) ? state.activeJobs : [];
+  const key = state.selectedKey || "";
+  return jobs.find((job) => job && (!job.album_key || job.album_key === key)) || null;
+}
+
 function updateActionButtons() {
   const album = selectedAlbum();
   const candidate = selectedCandidate();
   const mode = workflowMode(album);
-  const busy = Boolean(state.actionActive || state.scanActive);
+  const jobState = albumJobState(album);
+  // Saved covers can be approved or rejected while this album searches for more.
+  const busy = jobState.busy;
+  const busyOrSearching = jobState.busy || jobState.searching;
   const hasCandidate = Boolean(candidate);
   const sourceUrl = candidate?.source_page || candidate?.source_url || "";
   const hasAlbum = Boolean(album);
@@ -1084,12 +1211,19 @@ function updateActionButtons() {
   el.detailPane.classList.remove("mode-empty", "mode-work", "mode-review", "mode-done");
   el.detailPane.classList.add(`mode-${mode}`);
   el.candidatePanel.classList.toggle("compact", compactCandidate);
+  // Phones hide the empty candidate box so the actions are closer to the top.
+  el.candidatePanel.classList.toggle("no-candidate", !hasCandidate);
   el.candidateTitle.textContent = mode === "done" ? "Replacement Cover" : "Candidate";
   el.candidatePosition.classList.toggle("hidden", compactCandidate);
   el.actionsTitle.textContent = "Actions";
   el.findArtworkBtn.textContent = mode === "done" ? "Search Again" : "Find Artwork";
-  el.findArtworkBtn.classList.toggle("primary", mode !== "done");
-  el.findArtworkBtn.classList.toggle("ghost", mode === "done");
+  // For a cover that just needs converting, that's the main action.
+  const convertFirst = canConvertCurrent && mode === "work";
+  el.findArtworkBtn.classList.toggle("primary", mode !== "done" && !convertFirst);
+  el.findArtworkBtn.classList.toggle("ghost", mode === "done" || convertFirst);
+  el.convertCurrentBtn.classList.toggle("primary", convertFirst);
+  el.convertCurrentBtn.classList.toggle("ghost", !convertFirst);
+  el.convertCurrentBtn.style.order = convertFirst ? "-1" : "";
 
   setVisible(el.primaryActionRow, hasAlbum);
   setVisible(el.findArtworkBtn, hasAlbum);
@@ -1109,26 +1243,27 @@ function updateActionButtons() {
   setVisible(el.markGoodBtn, hasAlbum && mode !== "done");
   setVisible(el.skipAlbumBtn, hasAlbum && mode !== "done");
 
-  el.findArtworkBtn.disabled = !hasAlbum || busy;
+  el.findArtworkBtn.disabled = !hasAlbum || busyOrSearching;
   el.approveEmbedBtn.disabled = !album || !hasCandidate || busy;
-  el.convertCurrentBtn.disabled = !canConvertCurrent || busy;
+  el.convertCurrentBtn.disabled = !canConvertCurrent || busyOrSearching;
   el.prevCandidateBtn.disabled = !canNavigateCandidates;
   el.nextCandidateBtn.disabled = !canNavigateCandidates;
   el.rejectCandidateBtn.disabled = !album || !hasCandidate || busy;
   el.rejectAllBtn.disabled = !album || !hasCandidate || busy;
   el.importImageBtn.disabled = !album || busy;
-  el.recheckAlbumBtn.disabled = !album || busy;
+  el.recheckAlbumBtn.disabled = !album || busyOrSearching;
   el.copyFolderBtn.disabled = !albumFolderPath(album);
   el.openSourceBtn.disabled = !sourceUrl;
   el.googleImagesBtn.disabled = !album;
-  el.markGoodBtn.disabled = !album || busy;
-  el.skipAlbumBtn.disabled = !album || busy;
+  el.markGoodBtn.disabled = !album || busyOrSearching;
+  el.skipAlbumBtn.disabled = !album || busyOrSearching;
   updateBatchControls();
 }
 
 function renderReviewJob(status) {
   const job = activeReviewJob(status);
   const wasActive = state.actionActive;
+  state.activeJobs = Array.isArray(status.active_jobs) ? status.active_jobs : [];
   state.actionActive = Boolean(job);
   el.scanBtn.disabled = state.scanActive || state.actionActive;
   if (el.freshScanBtn) el.freshScanBtn.disabled = state.scanActive || state.actionActive;
@@ -1138,9 +1273,15 @@ function renderReviewJob(status) {
   if (job) {
     const title = jobTitle(job);
     const detail = jobDetailText(job);
-    el.actionMessage.textContent = job.candidate_count || job.candidate_count === 0
-      ? `${title} - ${optionLabel(job.candidate_count)}`
-      : title;
+    const ownJob = jobForSelectedAlbum();
+    if (ownJob) {
+      const ownTitle = jobTitle(ownJob);
+      el.actionMessage.textContent = ownJob.candidate_count || ownJob.candidate_count === 0
+        ? `${ownTitle} - ${optionLabel(ownJob.candidate_count)}`
+        : ownTitle;
+    } else if (selectedAlbum()) {
+      el.actionMessage.textContent = idleActionMessage();
+    }
     if (!state.scanActive) showActivityPanel(title, detail);
     if (job.kind === "repair-queue") maintenanceMessage(job.label || "Repairing queue");
   } else if (wasActive && !state.scanActive) {
@@ -1149,6 +1290,17 @@ function renderReviewJob(status) {
   }
   updateActionButtons();
   if (!el.settingsOverlay.classList.contains("hidden")) renderBackupList();
+}
+
+function renderTokenWarning(text) {
+  let hidden = false;
+  try {
+    hidden = sessionStorage.getItem("amwHideTokenWarning") === text;
+  } catch (_error) {
+    hidden = false;
+  }
+  el.tokenWarningText.textContent = text;
+  el.tokenWarning.classList.toggle("hidden", !text || hidden);
 }
 
 async function refreshStatus() {
@@ -1171,6 +1323,7 @@ async function refreshStatus() {
       }
     }
     setCounts(counts);
+    renderTokenWarning(app.token_warning || "");
     renderScan(status);
     renderReviewJob(status);
     el.workerSummary.textContent = `Build ${status.worker_build || "-"} - ${shortPath((app.music_roots || [])[0] || "/music")}`;
@@ -1277,6 +1430,7 @@ async function refreshQueue(options = {}) {
     } else if (!state.actionActive) {
       state.preferredNextKey = "";
     }
+    advanceAfterFinishedAlbum();
     if (queueChanged) renderRows();
     if (queueChanged || previousSelected !== state.selectedKey || force) {
       renderSelected();
@@ -1304,6 +1458,13 @@ async function loadCover(album) {
   if (!album) {
     el.coverPlaceholder.textContent = "No artwork";
     el.coverMeta.textContent = "No cover selected";
+    updateArtworkViewer();
+    return;
+  }
+  if (!album.width || !album.height) {
+    // The scan found no embedded cover; don't ask the NAS for one (avoids a 404).
+    el.coverPlaceholder.textContent = "No artwork";
+    el.coverMeta.textContent = currentCoverLabel(album, false);
     updateArtworkViewer();
     return;
   }
@@ -1375,7 +1536,7 @@ function renderCandidate() {
       el.candidateMeta.textContent = "Find artwork to see options";
     }
     el.candidateMeta.removeAttribute("title");
-    if (!state.actionActive) {
+    if (!jobForSelectedAlbum()) {
       el.actionMessage.textContent = idleActionMessage(album);
     }
     loadCandidateCover(null);
@@ -1384,7 +1545,7 @@ function renderCandidate() {
   }
   el.candidateMeta.textContent = candidateShortLabel(candidate);
   el.candidateMeta.title = candidateLabel(candidate);
-  if (!state.actionActive) {
+  if (!jobForSelectedAlbum()) {
     el.actionMessage.textContent = idleActionMessage(album);
   }
   loadCandidateCover(candidate);
@@ -1565,7 +1726,7 @@ function renderSelected(options = {}) {
   el.detailReason.textContent = nextLabel(album);
   el.detailTracks.textContent = trackLabel(album);
   el.detailChecked.textContent = compactChecked(album);
-  if (!state.actionActive) {
+  if (!jobForSelectedAlbum()) {
     el.actionMessage.textContent = idleActionMessage(album);
   }
   state.candidates = [];
@@ -1577,8 +1738,15 @@ function renderSelected(options = {}) {
   updateActionButtons();
 }
 
+function setMoreActionsOpen(open) {
+  el.actionsPanel.classList.toggle("show-more", Boolean(open));
+  el.moreActionsBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  el.moreActionsBtn.textContent = open ? "Fewer actions" : "More actions";
+}
+
 function selectAlbum(albumKey, options = {}) {
   const previousKey = state.selectedKey;
+  if (previousKey !== albumKey) setMoreActionsOpen(false);
   state.selectedKey = albumKey || "";
   if (!options.keepPreferred) state.preferredNextKey = "";
   state.detailOpen = options.openDetail === false ? state.detailOpen : Boolean(state.selectedKey);
@@ -2038,6 +2206,15 @@ function bind() {
   el.copyFolderBtn.addEventListener("click", copyFolderPath);
   el.openSourceBtn.addEventListener("click", openSourcePage);
   el.googleImagesBtn.addEventListener("click", openGoogleImages);
+  el.hideTokenWarningBtn.addEventListener("click", () => {
+    try {
+      sessionStorage.setItem("amwHideTokenWarning", el.tokenWarningText.textContent);
+    } catch (_error) {
+      // Private browsing: just hide it until the next refresh.
+    }
+    el.tokenWarning.classList.add("hidden");
+  });
+  el.moreActionsBtn.addEventListener("click", () => setMoreActionsOpen(!el.actionsPanel.classList.contains("show-more")));
   el.markGoodBtn.addEventListener("click", () => runAlbumAction("/api/album/mark-good", "Marked as good"));
   el.skipAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/skip", "Skipped for now"));
   el.selectModeBtn.addEventListener("click", () => setSelectionMode(!state.selectionMode));
@@ -2169,6 +2346,36 @@ function bind() {
       }
     }, { passive: true });
   }
+  // Review shortcuts, matching the Mac app: F find, A approve, R reject,
+  // S skip, C convert, N next album needing work, / search the queue.
+  document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (state.viewerOpen || state.batchMenuOpen || !el.settingsOverlay.classList.contains("hidden")) return;
+    const target = event.target;
+    const tag = String(target?.tagName || "").toLowerCase();
+    if (target?.isContentEditable || ["input", "textarea", "select"].includes(tag)) return;
+    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    if (key === "/") {
+      event.preventDefault();
+      el.searchInput.focus();
+      el.searchInput.select();
+      return;
+    }
+    if (key === "n") {
+      const next = nextActionableKey(state.selectedKey);
+      if (next) {
+        event.preventDefault();
+        selectAlbum(next, { openDetail: false });
+        el.albumRows.querySelector(`tr[data-album-key="${CSS.escape(next)}"]`)?.scrollIntoView({ block: "nearest" });
+      }
+      return;
+    }
+    const button = SHORTCUT_BUTTONS[key] && el[SHORTCUT_BUTTONS[key]];
+    // Only press buttons the user could click right now.
+    if (!button || button.disabled || button.offsetParent === null) return;
+    event.preventDefault();
+    button.click();
+  });
   document.addEventListener("keydown", (event) => {
     if (!state.viewerOpen) return;
     if (event.key === "Escape") {

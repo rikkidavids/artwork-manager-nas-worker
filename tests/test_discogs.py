@@ -147,3 +147,11 @@ def test_search_includes_discogs_only_with_token(server, discogs, monkeypatch):
     monkeypatch.setattr(server, 'web_add_history', lambda *a, **k: None)
     server.web_search_artwork_for_album('abc123')
     assert {c['source'] for c in added} == {'Discogs'}
+
+
+def test_offline_discogs_counts_as_unreachable(server, monkeypatch):
+    def offline(self, url, **kw):
+        raise requests.ConnectionError('no route to host')
+    monkeypatch.setattr(requests.Session, 'get', offline)
+    with pytest.raises(server.SourceUnreachable):
+        server.web_discogs_candidates(ALBUM, 5, _settings(server))

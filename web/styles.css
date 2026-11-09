@@ -2271,3 +2271,70 @@ tbody tr.batch-selected:not(.selected) {
     padding: 8px;
   }
 }
+
+/* "More actions" only exists on phones; desktop shows every action. */
+.more-actions-btn {
+  display: none;
+}
+
+@media (max-width: 740px) {
+  /* Let the notes and actions panels sit directly in the detail column so the
+     actions can stay pinned to the bottom of the screen while scrolling. */
+  .review-bottom {
+    display: contents;
+  }
+
+  .actions-panel {
+    position: sticky;
+    bottom: 0;
+    z-index: 6;
+    overflow: visible;
+    box-shadow: 0 -8px 20px rgba(15, 23, 42, 0.12);
+  }
+
+  .actions-panel #actionsTitle {
+    display: none;
+  }
+
+  .actions-panel p {
+    min-height: 0;
+    margin: 0 0 6px;
+  }
+
+  .more-actions-btn {
+    display: block;
+    width: 100%;
+    margin-top: 6px;
+  }
+
+  .actions-panel:not(.show-more) #quietActionRow {
+    display: none;
+  }
+
+  /* No candidate yet: drop the big empty placeholder on small screens. */
+  #candidatePanel.no-candidate {
+    min-height: 0;
+    height: auto;
+    flex: 0 0 auto;
+  }
+
+  #candidatePanel.no-candidate .cover-box {
+    display: none;
+  }
+}
+
+.token-warning {
+  border-left-color: var(--amber);
+}
+
+.token-warning h2 {
+  color: var(--amber);
+}
+
+@media (max-width: 740px) {
+  .token-warning {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}

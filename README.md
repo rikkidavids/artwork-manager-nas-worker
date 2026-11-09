@@ -2,7 +2,7 @@
 
 NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.54**
+Current worker build: **5.55**
 Worker API: **5**
 
 ## Why This Repo Exists
@@ -16,6 +16,8 @@ ghcr.io/rikkidavids/artwork-manager-nas-worker:latest
 Synology Container Manager can then update the worker like a normal container image. GitHub builds the image; the NAS only pulls and restarts it.
 
 The publishing workflow template is included at `github-actions/docker-image.yml`. To activate image publishing, copy that file to `.github/workflows/docker-image.yml` in GitHub or push it from a Git token with `workflow` scope.
+
+Build 5.55 fixes multi-disc albums being marked Good when a later disc had no artwork, names the disc in problem files, says when artwork sources couldn't be reached, lets you approve a saved cover while that album is still searching, moves on to the next album after finishing one, adds keyboard shortcuts (F find, A approve, R reject, S skip, C convert, N next, / search), pins the actions to the bottom of the screen on phones, and warns when the access token is missing or still a placeholder.
 
 Build 5.54 adds Discogs as an artwork source. Paste a Discogs personal access token in Settings > Artwork (create one at discogs.com > Settings > Developers). The token stays on the NAS and is never sent back to the browser; you can also set it with `AMW_DISCOGS_TOKEN` in `.env`.
 
@@ -135,7 +137,7 @@ http://YOUR-NAS-IP:8765/app/
 Open the plain worker status at `http://YOUR-NAS-IP:8765/` without a browser UI check. You should see:
 
 ```text
-worker_build: "5.54"
+worker_build: "5.55"
 api: 5
 ```
 
