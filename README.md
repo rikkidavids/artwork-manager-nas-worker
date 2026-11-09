@@ -15,7 +15,7 @@ ghcr.io/rikkidavids/artwork-manager-nas-worker:latest
 
 Synology Container Manager can then update the worker like a normal container image. GitHub builds the image; the NAS only pulls and restarts it.
 
-The publishing workflow template is included at `github-actions/docker-image.yml`. To activate image publishing, copy that file to `.github/workflows/docker-image.yml` in GitHub or push it from a Git token with `workflow` scope.
+Publishing is automatic: `.github/workflows/docker-image.yml` tests every change and publishes a new image whenever `main` changes. See [Updates](#updates) for how it reaches the NAS.
 
 Build 5.47 refreshes album rows from fresh file checks, keeps mixed-track problems ahead of size-only labels, and fixes artwork inspector fit on small screens.
 
@@ -68,61 +68,75 @@ chmod +x update_worker.sh
 ./update_worker.sh
 ```
 
-## Future Updates
+## Updates
 
-If your NAS already runs Watchtower, Artwork Manager is labelled for auto-updates by default:
+Once set up, there is nothing to do on the NAS. Merge a change on GitHub and it is running a few minutes later:
+
+1. **Merge to `main`** (or push to it).
+2. **GitHub tests it.** If any test fails, nothing is published and the NAS keeps running the current version.
+3. **GitHub builds and publishes** `ghcr.io/rikkidavids/artwork-manager-nas-worker:latest` (about 3-5 minutes).
+4. **GitHub tells Watchtower on the NAS to update**, asking only for this image, so your other containers are never touched.
+5. **Watchtower pulls the new image and recreates the container.** Your settings, queue and backups live in `./data` and `./backups`, so they carry over.
+
+The build number in the app's header (for example "Build 5.55") shows which version is running.
+
+If GitHub can't reach the NAS, the build still succeeds (with a warning) and Watchtower picks up the new image on its next regular check.
+
+### One-time setup for instant updates
+
+**1. Use the maintained Watchtower.** The original `containrrr/watchtower` was archived in December 2025 and no longer gets fixes. In your existing Watchtower project, change only the image line; everything else stays the same:
 
 ```yaml
-com.centurylinklabs.watchtower.enable: "true"
+image: ghcr.io/nicholas-fedor/watchtower:latest
 ```
 
-After installing this build once, recreate the Artwork Manager project so the label is applied. If your Watchtower uses label filtering, it will then pick up future `ghcr.io/rikkidavids/artwork-manager-nas-worker:latest` images and recreate this container automatically. If your Watchtower already watches every container, the label is harmless.
-
-To turn this off for Artwork Manager only, set this in `.env`:
-
-```text
-AMW_AUTO_UPDATE=false
-```
-
-From the NAS project folder:
-
-```sh
-./update_worker.sh
-```
-
-That manual command remains as a fallback. It pulls the latest GitHub Container Registry image and recreates the container.
-
-You can also update from Synology Container Manager by stopping the project, pulling/updating the image, and starting/rebuilding the project.
-
-## Immediate Updates From GitHub
-
-For immediate updates after a push, enable Watchtower's HTTP API and let GitHub call it once the new image has been published.
-
-Add these environment lines to your existing Watchtower project:
+**2. Turn on Watchtower's update API.** Add these to the Watchtower project's environment, using a long random token:
 
 ```yaml
 - WATCHTOWER_HTTP_API_UPDATE=true
-- WATCHTOWER_HTTP_API_TOKEN=use-a-long-private-token
+- WATCHTOWER_HTTP_API_TOKEN=use-a-long-random-token
 - WATCHTOWER_HTTP_API_PERIODIC_POLLS=true
 ```
 
-Expose Watchtower's API port only through a private or protected route:
+and publish its API port on the NAS:
 
 ```yaml
 ports:
   - "8080:8080"
 ```
 
-Then add these GitHub repository secrets in `artwork-manager-nas-worker`:
+`WATCHTOWER_HTTP_API_PERIODIC_POLLS=true` keeps Watchtower's normal schedule for your other containers.
+
+**3. Give GitHub an HTTPS address for it.** GitHub's servers can't reach a `192.168.x.x` address. In DSM, go to **Control Panel > Login Portal > Advanced > Reverse Proxy** and add a rule from an HTTPS hostname (for example a free `yourname.synology.me` DDNS name with its Let's Encrypt certificate) to `http://localhost:8080`. Forward only that HTTPS port on your router. Watchtower refuses any request without the token.
+
+**4. Add two GitHub secrets.** In this repository, go to **Settings > Secrets and variables > Actions > New repository secret**:
 
 ```text
-AMW_WATCHTOWER_UPDATE_URL=https://YOUR-PROTECTED-WATCHTOWER-URL/v1/update
-AMW_WATCHTOWER_UPDATE_TOKEN=the-same-long-private-token
+AMW_WATCHTOWER_UPDATE_URL=https://yourname.synology.me/v1/update
+AMW_WATCHTOWER_UPDATE_TOKEN=the-same-long-random-token
 ```
 
-After those secrets exist and the active GitHub workflow contains the trigger step from `github-actions/docker-image.yml`, each push to `main` builds the GHCR image and calls Watchtower immediately. If the secrets are missing, the workflow skips the trigger and still publishes the image normally.
+The workflow adds `?image=ghcr.io/rikkidavids/artwork-manager-nas-worker` itself, so the call can only update Artwork Manager.
 
-Important: GitHub cannot call a private `192.168.x.x` address. Use a protected HTTPS route, a tunnel, or a self-hosted GitHub runner on the NAS/LAN.
+**5. Make sure Artwork Manager is labelled for Watchtower.** It is by default (`com.centurylinklabs.watchtower.enable: "true"` in `docker-compose.yml`). Recreate the Artwork Manager project once if you installed it before that label existed.
+
+**Check it works:** on GitHub, open **Actions**, then **Run workflow** on `main`. The last step should say "NAS update requested", and the app's header should show the new build within a minute.
+
+Without steps 2-4, updates still happen automatically, just on Watchtower's regular schedule instead of instantly.
+
+### Going back to an earlier version
+
+Every build is also published with a `sha-` tag matching its commit (shown in GitHub's commit list). To pin one, set it in `.env` and recreate the project:
+
+```text
+AMW_IMAGE_TAG=sha-2c06a3f
+```
+
+Set `AMW_IMAGE_TAG=latest` (or remove the line) to go back to automatic updates. To stop automatic updates for Artwork Manager only, set `AMW_AUTO_UPDATE=false`.
+
+### Updating by hand
+
+From the NAS project folder, `./update_worker.sh` pulls the latest image, recreates the container and prints the build that's now running. In Synology Container Manager you can do the same by stopping the project, updating the image and starting it again.
 
 ## Verify
 

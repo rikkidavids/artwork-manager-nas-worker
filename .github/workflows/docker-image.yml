@@ -6,14 +6,56 @@ on:
       - main
     tags:
       - "v*"
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
+# A newer push to the same branch replaces an older build still in progress.
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Every push to main is installed on the NAS automatically, so nothing is
+  # published unless the tests pass first. Pull requests run this job too.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ffmpeg (used to make test audio files)
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest pyflakes
+
+      - name: Check server and web app for errors
+        run: |
+          python -m pyflakes server.py | grep -v "imported but unused\|never used" && exit 1 || true
+          node --check web/app.js
+
+      - name: Run tests
+        run: |
+          if ls tests/test_*.py >/dev/null 2>&1; then
+            python -m pytest -q tests
+          else
+            echo "No tests yet; skipping."
+          fi
+
   image:
+    needs: test
+    # Pull requests are tested only; images are published from main and tags.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -52,21 +94,38 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Trigger NAS Watchtower update
+      - name: Tell the NAS to update now
         if: ${{ github.ref == 'refs/heads/main' }}
+        # The image is already published; if the NAS can't be reached,
+        # Watchtower's regular check still picks it up later.
+        continue-on-error: true
         env:
           AMW_WATCHTOWER_UPDATE_URL: ${{ secrets.AMW_WATCHTOWER_UPDATE_URL }}
           AMW_WATCHTOWER_UPDATE_TOKEN: ${{ secrets.AMW_WATCHTOWER_UPDATE_TOKEN }}
+          IMAGE: ghcr.io/${{ github.repository }}
         run: |
           if [ -z "$AMW_WATCHTOWER_UPDATE_URL" ] || [ -z "$AMW_WATCHTOWER_UPDATE_TOKEN" ]; then
-            echo "Watchtower trigger secrets are not set; skipping NAS update trigger."
+            echo "::notice::Watchtower secrets are not set, so the NAS will update on Watchtower's next regular check instead."
             exit 0
           fi
 
-          curl --fail --show-error --silent \
+          # Only ask Watchtower to update this app's image, never other containers.
+          url="$AMW_WATCHTOWER_UPDATE_URL"
+          case "$url" in
+            *image=*) ;;
+            *\?*) url="${url}&image=${IMAGE}" ;;
+            *) url="${url}?image=${IMAGE}" ;;
+          esac
+
+          if curl --fail --show-error --silent \
             --connect-timeout 10 \
-            --max-time 120 \
+            --max-time 180 \
             --retry 2 \
             --retry-delay 5 \
             -H "Authorization: Bearer ${AMW_WATCHTOWER_UPDATE_TOKEN}" \
-            "${AMW_WATCHTOWER_UPDATE_URL}"
+            "$url"; then
+            echo "::notice::NAS update requested. The new build should be running within a minute."
+          else
+            echo "::warning::Couldn't reach Watchtower on the NAS. The image is published; it will update on Watchtower's next regular check."
+            exit 1
+          fi
