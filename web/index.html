@@ -35,6 +35,7 @@
         </div>
         <div class="top-actions">
           <button id="refreshBtn" class="ghost" type="button">Refresh</button>
+          <button id="shortcutsBtn" class="ghost header-shortcuts" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
           <button id="settingsBtn" class="ghost" type="button">Settings</button>
           <button id="scanBtn" class="primary" type="button">Scan Library</button>
         </div>
@@ -143,6 +144,10 @@
                 <span id="candidatePlaceholder">No candidate</span>
               </div>
               <p id="candidateMeta">Find artwork to see options</p>
+            </section>
+
+            <section id="optionsPanel" class="art-panel options-panel hidden" aria-labelledby="optionsTitle">
+              <h3 id="optionsTitle" class="sr-only">All options</h3>
               <div id="candidateOptions" class="candidate-options hidden" role="listbox" aria-label="Found artwork options"></div>
             </section>
           </div>
@@ -342,7 +347,7 @@
                   <li data-source="musicbrainz"><label><input id="settingMusicbrainzEnabled" name="musicbrainz_enabled" type="checkbox"> Search MusicBrainz</label></li>
                   <li data-source="discogs"><label><input id="settingDiscogsEnabled" name="discogs_enabled" type="checkbox"> Search Discogs (needs a token)</label></li>
                 </ol>
-                <p class="setting-note">Sources are searched from top to bottom, and their covers are listed in that order. Use the arrows to change it.</p>
+                <p class="setting-note">Sources are searched from top to bottom, and their covers are listed in that order. Use the arrows to change it. <button id="resetSourceOrderBtn" class="link-button" type="button">Reset to recommended order</button></p>
               </div>
               <div class="setting-grid">
                 <label class="setting-field">

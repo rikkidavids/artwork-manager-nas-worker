@@ -2728,7 +2728,7 @@ tbody tr.batch-selected:not(.selected) {
 
 /* Smaller screens: drop the Size column (it's shown in the album view) so
    Artist and Album get the room. */
-@media (min-width: 901px) and (max-width: 1299px) {
+@media (min-width: 901px) and (max-width: 1439px) {
   .queue-pane .size-col {
     display: none;
   }
@@ -2886,3 +2886,48 @@ kbd {
 :root[data-density="comfortable"] .summary-meta span { padding-top: 4px; padding-bottom: 4px; }
 
 .maintenance-result:empty { display: none; }
+
+/* ---- Layout pass (5.60) ---- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* All cover options get their own strip under both covers, so the space
+   under the current cover isn't wasted and the grid needs fewer rows. */
+.options-panel {
+  grid-column: 1 / -1;
+  overflow: visible;
+}
+
+.options-panel .candidate-options {
+  margin-top: 0;
+}
+
+@media (min-width: 1500px) {
+  .candidate-options { grid-template-columns: repeat(auto-fill, 80px); }
+}
+
+/* Phones: the strip sits straight under the candidate, before the actions. */
+@media (max-width: 900px) {
+  .detail-pane.mode-review #optionsPanel { order: 1; }
+}
+
+/* Albums still needing a cover: don't spend half the screen on two empty
+   squares. The boxes shrink to a short placeholder until there's artwork. */
+@media (min-width: 901px) {
+  .detail-pane.mode-work .cover-box.no-art,
+  .detail-pane.mode-work #candidatePanel.no-candidate .cover-box {
+    width: 100%;
+    max-width: none;
+    height: 92px;
+    aspect-ratio: auto;
+  }
+}
+
+.header-shortcuts { width: 34px; padding: 0; }
+@media (max-width: 740px) { .header-shortcuts { display: none; } }
