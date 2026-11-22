@@ -2,7 +2,7 @@
 
 NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.57**
+Current worker build: **5.58**
 Worker API: **5**
 
 ## Why This Repo Exists
@@ -16,6 +16,8 @@ ghcr.io/rikkidavids/artwork-manager-nas-worker:latest
 Synology Container Manager can then update the worker like a normal container image. GitHub builds the image; the NAS only pulls and restarts it.
 
 Publishing is automatic: `.github/workflows/docker-image.yml` tests every change and publishes a new image whenever `main` changes. See [Updates](#updates) for how it reaches the NAS.
+
+Build 5.58 reworks the review screen for laptop-sized screens: the review side gets most of the width, cover options show as a grid of thumbnails with size, source and score, the action buttons stay pinned in reach while the review side scrolls, and covers scale to the screen height.
 
 Build 5.57 adds **Ignore** (take an album out of the queue for good; rescans won't bring it back), **Rework** (send a finished or ignored album back to Needs Work for a new cover), one-click **Undo Last Embed** (when backups are on), and **Stop** for scans and batch actions, which stops after the album in progress. It also fixes the album list staying empty after a very quick scan, and batch searches and conversions not showing progress in the header.
 
@@ -155,7 +157,7 @@ http://YOUR-NAS-IP:8765/app/
 Open the plain worker status at `http://YOUR-NAS-IP:8765/` without a browser UI check. You should see:
 
 ```text
-worker_build: "5.57"
+worker_build: "5.58"
 api: 5
 ```
 

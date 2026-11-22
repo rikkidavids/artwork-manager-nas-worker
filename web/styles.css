@@ -2562,3 +2562,186 @@ tbody tr.batch-selected:not(.selected) {
   border-radius: 999px;
   font-size: 13px;
 }
+
+/* ---------------------------------------------------------------------------
+   Review layout (desktop and laptop): give the review side most of the width,
+   let it scroll instead of squashing, show cover options as a thumbnail grid,
+   and keep the action buttons pinned in reach.
+   --------------------------------------------------------------------------- */
+.candidate-options {
+  grid-template-columns: repeat(auto-fill, 68px);
+  align-content: start;
+  justify-content: start;
+}
+
+/* The options grid isn't capped at any screen size; thumbnails stay square. */
+.detail-pane .candidate-options {
+  flex: 0 0 auto;
+  max-height: none;
+  overflow: visible;
+}
+
+.detail-pane .candidate-option {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  height: auto;
+  min-height: 0;
+  padding: 4px;
+  text-align: center;
+}
+
+.candidate-option-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 5px;
+  background: var(--cover-bg);
+}
+
+.candidate-option-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.candidate-option-thumb img:not([src]) {
+  visibility: hidden;
+}
+
+.candidate-option.active {
+  outline: 2px solid var(--blue);
+  outline-offset: -1px;
+}
+
+.candidate-option.has-warning .candidate-option-main::after {
+  content: " !";
+  color: var(--amber);
+}
+
+@media (min-width: 901px) {
+  .workspace {
+    grid-template-columns: minmax(370px, 0.68fr) minmax(0, 1.5fr);
+  }
+
+  .detail-pane {
+    /* Covers grow with the screen, but shrink on short screens so the
+       action buttons still fit without scrolling. */
+    --cover-slot: clamp(190px, min(23vw, calc(100vh - 450px)), 400px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .review-grid {
+    align-items: start;
+  }
+
+  .art-panel {
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .cover-box {
+    width: 100%;
+  }
+
+  .candidate-options {
+    flex: 0 0 auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  /* Actions come straight after the covers and stay pinned to the bottom of
+     the review pane while you scroll; summary and problem files go below.
+     (The wrapper steps aside so the pinning works across the whole pane.) */
+  .review-bottom {
+    display: contents;
+  }
+
+  .detail-pane > .detail-head {
+    order: 0;
+  }
+
+  .detail-pane > .review-grid {
+    order: 1;
+  }
+
+  .review-bottom > .actions-panel {
+    position: sticky;
+    bottom: -8px;
+    z-index: 4;
+    order: 2;
+    flex: 0 0 auto;
+    margin-top: 10px;
+    overflow: visible;
+    box-shadow: 0 -10px 24px -14px rgba(0, 0, 0, 0.45);
+  }
+
+  .review-bottom > .notes-panel {
+    order: 3;
+    flex: 0 0 auto;
+    margin-top: 10px;
+    overflow: visible;
+  }
+
+  .actions-panel #actionsTitle {
+    display: none;
+  }
+
+  /* Main and option buttons share one line; the less-used tools wrap below. */
+  .review-bottom > .actions-panel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 14px;
+    row-gap: 6px;
+  }
+
+  .actions-panel > p,
+  .actions-panel > #quietActionRow {
+    flex: 1 0 100%;
+  }
+
+  .actions-panel > p {
+    min-height: 0;
+    margin: 0;
+  }
+
+  .actions-panel .action-row {
+    margin-top: 0;
+  }
+
+  .actions-panel .quiet-actions button {
+    height: 28px;
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+
+  .candidate-options .candidate-option-sub {
+    display: block;
+  }
+}
+
+/* Smaller screens: drop the Size column (it's shown in the album view) so
+   Artist and Album get the room. */
+@media (min-width: 901px) and (max-width: 1299px) {
+  .queue-pane .size-col {
+    display: none;
+  }
+
+  .queue-pane .status-col {
+    width: 74px;
+  }
+
+  .queue-pane .opts-col {
+    width: 48px;
+  }
+
+  .queue-pane .artist-col {
+    width: 38%;
+  }
+}
