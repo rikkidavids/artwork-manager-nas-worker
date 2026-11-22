@@ -64,6 +64,18 @@ const el = {
   batchIgnoreBtn: document.getElementById("batchIgnoreBtn"),
   batchReworkBtn: document.getElementById("batchReworkBtn"),
   stopJobBtn: document.getElementById("stopJobBtn"),
+  refreshStorageBtn: document.getElementById("refreshStorageBtn"),
+  cleanStorageBtn: document.getElementById("cleanStorageBtn"),
+  storageWaiting: document.getElementById("storageWaiting"),
+  storageHandled: document.getElementById("storageHandled"),
+  storageLeftover: document.getElementById("storageLeftover"),
+  storageBackups: document.getElementById("storageBackups"),
+  storageResult: document.getElementById("storageResult"),
+  historyKind: document.getElementById("historyKind"),
+  historySearch: document.getElementById("historySearch"),
+  historyList: document.getElementById("historyList"),
+  historyCount: document.getElementById("historyCount"),
+  historyMoreBtn: document.getElementById("historyMoreBtn"),
   undoEmbedBtn: document.getElementById("undoEmbedBtn"),
   reworkAlbumBtn: document.getElementById("reworkAlbumBtn"),
   ignoreAlbumBtn: document.getElementById("ignoreAlbumBtn"),
@@ -136,6 +148,9 @@ const el = {
   saveSettingsBtn: document.getElementById("saveSettingsBtn"),
   settingLibraryRoot: document.getElementById("settingLibraryRoot"),
   settingThemeMode: document.getElementById("settingThemeMode"),
+  settingDensity: document.getElementById("settingDensity"),
+  shortcutsOverlay: document.getElementById("shortcutsOverlay"),
+  closeShortcutsBtn: document.getElementById("closeShortcutsBtn"),
   settingBuild: document.getElementById("settingBuild"),
   settingApi: document.getElementById("settingApi"),
   settingDataRoot: document.getElementById("settingDataRoot"),
@@ -150,6 +165,9 @@ const el = {
   settingMaxEmbed: document.getElementById("settingMaxEmbed"),
   settingSaveFolder: document.getElementById("settingSaveFolder"),
   settingBackupEmbed: document.getElementById("settingBackupEmbed"),
+  settingWarnLowConfidence: document.getElementById("settingWarnLowConfidence"),
+  settingDryRun: document.getElementById("settingDryRun"),
+  detailFolderCover: document.getElementById("detailFolderCover"),
   settingDeezerEnabled: document.getElementById("settingDeezerEnabled"),
   sourceOrderList: document.getElementById("sourceOrderList"),
   settingItunesEnabled: document.getElementById("settingItunesEnabled"),
@@ -275,6 +293,26 @@ function applyTheme(mode) {
   document.documentElement.dataset.theme = resolved;
   localStorage.setItem("amwThemeMode", normal);
   if (el.settingThemeMode) el.settingThemeMode.value = normal;
+}
+
+function applyDensity(value) {
+  const density = value === "comfortable" ? "comfortable" : "standard";
+  document.documentElement.dataset.density = density;
+  try { localStorage.setItem("amwDensity", density); } catch (_) { /* private mode */ }
+  if (el.settingDensity) el.settingDensity.value = density;
+}
+
+function openShortcuts() {
+  state.shortcutsReturnFocus = document.activeElement;
+  el.shortcutsOverlay.classList.remove("hidden");
+  syncModalIsolation();
+  el.closeShortcutsBtn.focus();
+}
+
+function closeShortcuts() {
+  el.shortcutsOverlay.classList.add("hidden");
+  syncModalIsolation();
+  state.shortcutsReturnFocus?.focus?.({ preventScroll: true });
 }
 
 function syncModalIsolation() {
@@ -593,6 +631,8 @@ function unreachableSourceText(album) {
 
 function idleActionMessage(album = selectedAlbum()) {
   if (!album) return "Select an album to begin";
+  // Keep a dry run's result on screen until the user moves on.
+  if (state.dryRunNote && state.dryRunNote.key === album.album_key) return state.dryRunNote.text;
   const mode = workflowMode(album);
   if (mode === "done") return "Current cover is good";
   const unreachable = unreachableSourceText(album);
@@ -669,6 +709,7 @@ function candidateOptionSub(candidate) {
 }
 
 function candidateApprovalWarning(candidate) {
+  if (state.settings.warn_low_confidence === false) return "";
   const warnings = candidateWarnings(candidate);
   const score = Number(candidate?.score || 0);
   const concerns = [];
@@ -703,13 +744,14 @@ function settingsTitle(tab) {
     scanning: "Scanning",
     artwork: "Artwork",
     maintenance: "Maintenance",
+    history: "History",
     safety: "Safety",
     security: "Security",
   }[tab] || "Settings";
 }
 
 function syncSaveButtonVisibility() {
-  const toolsOnly = ["safety", "maintenance"].includes(state.settingsTab);
+  const toolsOnly = ["safety", "maintenance", "history"].includes(state.settingsTab);
   el.saveSettingsBtn.classList.toggle("hidden", toolsOnly && !state.settingsDirty);
 }
 
@@ -725,6 +767,8 @@ function setSettingsTab(tab) {
   // (unless changes from another tab are still waiting to be saved).
   state.settingsTab = tab;
   syncSaveButtonVisibility();
+  if (tab === "maintenance") loadStorage();
+  if (tab === "history") loadHistory();
   if (tab === "safety") {
     loadBackupHistory();
   }
@@ -903,6 +947,139 @@ function renderFinishedAction(status) {
   maintenanceMessage(`Queue repair finished. Checked ${fmt(checked)} album${checked === 1 ? "" : "s"}; updated ${fmt(changed)}.${issues}`);
 }
 
+// ---- History (Settings > History) ----
+
+const historyState = { entries: [], total: 0, timer: 0, seq: 0 };
+
+function formatWhen(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || "");
+  const today = new Date();
+  const sameDay = date.toDateString() === today.toDateString();
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return sameDay ? `Today ${time}` : `${date.toLocaleDateString([], { day: "numeric", month: "short", year: date.getFullYear() === today.getFullYear() ? undefined : "numeric" })} ${time}`;
+}
+
+function renderHistory() {
+  el.historyList.replaceChildren();
+  if (!historyState.entries.length) {
+    const empty = document.createElement("li");
+    empty.className = "history-empty";
+    empty.textContent = "Nothing recorded yet.";
+    el.historyList.append(empty);
+  }
+  for (const entry of historyState.entries) {
+    const li = document.createElement("li");
+    li.className = "history-row";
+    const when = document.createElement("time");
+    when.textContent = formatWhen(entry.created_at);
+    when.dateTime = entry.created_at || "";
+    const body = document.createElement("div");
+    const head = document.createElement("strong");
+    head.textContent = entry.label;
+    body.append(head);
+    if (entry.album_key) {
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "link-button";
+      link.dataset.albumKey = entry.album_key;
+      link.dataset.albumQuery = entry.album || entry.artist || "";
+      link.textContent = [entry.artist, entry.album].filter(Boolean).join(" \u2013 ") || "Album no longer in library";
+      link.disabled = !(entry.artist || entry.album);
+      body.append(" ", link);
+    }
+    if (entry.detail) {
+      const detail = document.createElement("span");
+      detail.className = "history-detail";
+      detail.textContent = entry.detail;
+      body.append(detail);
+    }
+    li.append(when, body);
+    el.historyList.append(li);
+  }
+  const shown = historyState.entries.length;
+  el.historyCount.textContent = historyState.total ? `Showing ${fmt(shown)} of ${fmt(historyState.total)}` : "";
+  el.historyMoreBtn.classList.toggle("hidden", shown >= historyState.total);
+}
+
+async function loadHistory({ append = false } = {}) {
+  const seq = ++historyState.seq;
+  const params = new URLSearchParams({ limit: "50", offset: String(append ? historyState.entries.length : 0) });
+  if (el.historyKind.value) params.set("kind", el.historyKind.value);
+  if (el.historySearch.value.trim()) params.set("q", el.historySearch.value.trim());
+  try {
+    const page = await api(`/api/history?${params}`);
+    if (seq !== historyState.seq) return;
+    historyState.entries = append ? historyState.entries.concat(page.entries) : page.entries;
+    historyState.total = page.total;
+    renderHistory();
+  } catch (error) {
+    el.historyCount.textContent = error.message || "History could not be loaded.";
+  }
+}
+
+async function openAlbumFromHistory(button) {
+  closeSettings();
+  state.bucket = "All";
+  localStorage.setItem("amwBucket", state.bucket);
+  state.query = button.dataset.albumQuery || "";
+  el.searchInput.value = state.query;
+  updateSearchControls();
+  state.preferredNextKey = "";
+  state.selectedKey = button.dataset.albumKey;
+  await refreshQueue({ force: true });
+  if (selectedAlbum()) await refreshCandidates(selectedAlbum());
+}
+
+// ---- Storage (Settings > Maintenance) ----
+
+function formatBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (n < 1024 * 1024) return `${Math.max(0, Math.round(n / 1024))} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function storageLine(part) {
+  const files = Number(part?.files || 0);
+  return `${formatBytes(part?.bytes)} \u00b7 ${fmt(files)} file${files === 1 ? "" : "s"}`;
+}
+
+function renderStorage(report) {
+  el.storageWaiting.textContent = storageLine(report.waiting);
+  el.storageHandled.textContent = storageLine(report.handled);
+  el.storageLeftover.textContent = storageLine(report.leftover);
+  el.storageBackups.textContent = storageLine(report.backups);
+  const freeable = Number(report.handled?.bytes || 0) + Number(report.leftover?.bytes || 0);
+  const freeableFiles = Number(report.handled?.files || 0) + Number(report.leftover?.files || 0);
+  el.cleanStorageBtn.disabled = freeableFiles === 0;
+  el.cleanStorageBtn.textContent = freeableFiles ? `Clear Handled Artwork (${formatBytes(freeable)})` : "Nothing to Clear";
+}
+
+async function loadStorage() {
+  el.storageResult.textContent = "Checking storage...";
+  try {
+    renderStorage(await api("/api/storage"));
+    el.storageResult.textContent = "";
+  } catch (error) {
+    el.storageResult.textContent = error.message || "Storage could not be checked.";
+  }
+}
+
+async function cleanStorage() {
+  if (!window.confirm("Delete downloaded covers you've already dealt with, plus leftover files?\n\nCovers waiting for your review, your music files and backups aren't touched.")) return;
+  el.cleanStorageBtn.disabled = true;
+  el.storageResult.textContent = "Clearing...";
+  try {
+    const result = await api("/api/storage/cleanup", { method: "POST", body: JSON.stringify({ kinds: ["handled", "leftover"] }) });
+    renderStorage(result.storage);
+    el.storageResult.textContent = `Freed ${formatBytes(result.freed_bytes)} (${fmt(result.removed_files)} file${result.removed_files === 1 ? "" : "s"}).`;
+  } catch (error) {
+    el.storageResult.textContent = error.message || "Storage could not be cleared.";
+    el.cleanStorageBtn.disabled = false;
+  }
+}
+
 async function runMaintenance(path, options = {}) {
   if (state.scanActive || state.actionActive) {
     maintenanceMessage("Wait for the current job to finish first.");
@@ -974,6 +1151,8 @@ function populateSettings(payload = {}) {
   el.settingMaxEmbed.value = settings.max_embedded_artwork_size || 0;
   el.settingSaveFolder.checked = Boolean(settings.save_approved_artwork_to_album_folder);
   el.settingBackupEmbed.checked = Boolean(settings.backup_before_embed);
+  el.settingWarnLowConfidence.checked = settings.warn_low_confidence !== false;
+  el.settingDryRun.checked = Boolean(settings.dry_run_embeds);
   applySourceOrder(settings.provider_order);
   el.settingDeezerEnabled.checked = Boolean(settings.deezer_enabled);
   el.settingItunesEnabled.checked = Boolean(settings.itunes_enabled);
@@ -1006,6 +1185,8 @@ function readSettingsForm() {
     max_embedded_artwork_size: Number(el.settingMaxEmbed.value || 0),
     save_approved_artwork_to_album_folder: el.settingSaveFolder.checked,
     backup_before_embed: el.settingBackupEmbed.checked,
+    warn_low_confidence: el.settingWarnLowConfidence.checked,
+    dry_run_embeds: el.settingDryRun.checked,
     provider_order: currentSourceOrder(),
     deezer_enabled: el.settingDeezerEnabled.checked,
     itunes_enabled: el.settingItunesEnabled.checked,
@@ -1323,6 +1504,12 @@ function renderReviewJob(status) {
   } else if (wasActive && !state.scanActive) {
     el.scanPanel.classList.add("hidden");
     if (selectedAlbum()) el.actionMessage.textContent = idleActionMessage();
+    const embed = latestRecentJob(status, "approve-embed");
+    if (embed && embed.dry_run && embed.job_id !== state.shownDryRunJob && embed.album_key === state.selectedKey) {
+      state.shownDryRunJob = embed.job_id;
+      state.dryRunNote = { key: embed.album_key, text: embed.reason || "Dry run finished. Nothing was changed." };
+      el.actionMessage.textContent = state.dryRunNote.text;
+    }
   }
   updateActionButtons();
   if (!el.settingsOverlay.classList.contains("hidden")) renderBackupList();
@@ -1704,6 +1891,26 @@ async function refreshCandidates(album, preferredCandidateId = null) {
   }
 }
 
+function renderFolderCover(cover) {
+  const node = el.detailFolderCover;
+  if (!cover) {
+    node.classList.add("hidden");
+    return;
+  }
+  let text;
+  if (cover.ok) {
+    const dims = Array.isArray(cover.dimensions) ? ` ${cover.dimensions[0]}\u00d7${cover.dimensions[1]}` : "";
+    text = `Folder cover: ${cover.name || "cover.jpg"}${dims}`;
+  } else if (cover.issue === "folder cover missing") {
+    text = cover.expected ? "Folder cover: no cover.jpg yet" : "No cover.jpg in folder";
+  } else {
+    text = `Folder cover: ${String(cover.issue || "needs attention").replace(/^folder cover /, "")}`;
+  }
+  node.textContent = text;
+  node.classList.toggle("warn", Boolean(cover.expected && !cover.ok));
+  node.classList.remove("hidden");
+}
+
 function clearProblemFiles(message = "") {
   state.problemKey = "";
   el.problemFiles.classList.toggle("hidden", !message);
@@ -1744,16 +1951,19 @@ function renderProblemFiles(problemFiles, check) {
 async function loadProblemFiles(album) {
   if (!album || workflowMode(album) === "done") {
     clearProblemFiles();
+    el.detailFolderCover.classList.add("hidden");
     return;
   }
   const albumKey = album.album_key;
   state.problemKey = albumKey;
   clearProblemFiles();
+  el.detailFolderCover.classList.add("hidden");
   state.problemKey = albumKey;
   try {
     const payload = await api(`/api/album/problems?album_key=${encodeURIComponent(albumKey)}`);
     if (state.problemKey !== albumKey || state.selectedKey !== albumKey) return;
     renderProblemFiles(payload.problem_files || [], payload.deep_file_check || {});
+    renderFolderCover(payload.folder_cover);
     if (payload.counts) setCounts(payload.counts);
     const updatedAlbum = mergeAlbumUpdate(payload.album);
     if (updatedAlbum) {
@@ -1826,7 +2036,10 @@ function setMoreActionsOpen(open) {
 
 function selectAlbum(albumKey, options = {}) {
   const previousKey = state.selectedKey;
-  if (previousKey !== albumKey) setMoreActionsOpen(false);
+  if (previousKey !== albumKey) {
+    setMoreActionsOpen(false);
+    state.dryRunNote = null;
+  }
   state.selectedKey = albumKey || "";
   if (!options.keepPreferred) state.preferredNextKey = "";
   state.detailOpen = options.openDetail === false ? state.detailOpen : Boolean(state.selectedKey);
@@ -1921,7 +2134,7 @@ async function approveSelectedCandidate() {
   if (warning && !window.confirm(warning)) return;
   rememberNextSelection();
   state.actionActive = true;
-  el.actionMessage.textContent = "Embedding artwork on the NAS";
+  el.actionMessage.textContent = state.settings.dry_run_embeds ? "Dry run: checking what would change" : "Embedding artwork on the NAS";
   updateActionButtons();
   try {
     await api("/api/artwork/approve", {
@@ -1998,7 +2211,9 @@ function setupSourceOrder() {
 }
 
 function anyDialogOpen() {
-  return !el.settingsOverlay.classList.contains("hidden") || !el.releaseOverlay.classList.contains("hidden");
+  return !el.settingsOverlay.classList.contains("hidden")
+    || !el.releaseOverlay.classList.contains("hidden")
+    || !el.shortcutsOverlay.classList.contains("hidden");
 }
 
 // ---- Choose Release / import from a link ----
@@ -2590,6 +2805,17 @@ function bind() {
     });
   }
   el.settingThemeMode.addEventListener("change", () => applyTheme(el.settingThemeMode.value));
+  el.settingDensity.addEventListener("change", () => applyDensity(el.settingDensity.value));
+  el.closeShortcutsBtn.addEventListener("click", closeShortcuts);
+  el.shortcutsOverlay.addEventListener("click", (event) => {
+    if (event.target === el.shortcutsOverlay) closeShortcuts();
+  });
+  el.shortcutsOverlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeShortcuts();
+    }
+  });
   el.scanBtn.addEventListener("click", startScan);
   if (el.freshScanBtn) el.freshScanBtn.addEventListener("click", startFreshScanFromSettings);
   el.findArtworkBtn.addEventListener("click", startArtworkSearch);
@@ -2653,6 +2879,18 @@ function bind() {
   el.reworkAlbumBtn.addEventListener("click", reworkAlbum);
   el.undoEmbedBtn.addEventListener("click", undoLastEmbed);
   el.stopJobBtn.addEventListener("click", stopRunningJob);
+  el.refreshStorageBtn.addEventListener("click", loadStorage);
+  el.historyKind.addEventListener("change", () => loadHistory());
+  el.historySearch.addEventListener("input", () => {
+    window.clearTimeout(historyState.timer);
+    historyState.timer = window.setTimeout(() => loadHistory(), 250);
+  });
+  el.historyMoreBtn.addEventListener("click", () => loadHistory({ append: true }));
+  el.historyList.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-album-key]");
+    if (button) openAlbumFromHistory(button);
+  });
+  el.cleanStorageBtn.addEventListener("click", cleanStorage);
   el.batchIgnoreBtn.addEventListener("click", () => runBatchAction("/api/batch/ignore", "Ignored selected albums", {
     confirmText: (count) => `Ignore ${fmt(count)} selected album${count === 1 ? "" : "s"}? They leave the queue for good; use Rework to bring any back.`,
     done: "Ignored selected albums. They're under Done.",
@@ -2800,6 +3038,11 @@ function bind() {
     const tag = String(target?.tagName || "").toLowerCase();
     if (target?.isContentEditable || ["input", "textarea", "select"].includes(tag)) return;
     const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    if (key === "?") {
+      event.preventDefault();
+      openShortcuts();
+      return;
+    }
     if (key === "/") {
       event.preventDefault();
       el.searchInput.focus();
@@ -2885,6 +3128,7 @@ async function tick() {
 }
 
 applyTheme(localStorage.getItem("amwThemeMode") || "Auto");
+try { applyDensity(localStorage.getItem("amwDensity")); } catch (_) { applyDensity("standard"); }
 syncResponsiveState();
 bind();
 refreshStatus().then(() => refreshQueue({ force: true })).finally(() => scheduleTick());

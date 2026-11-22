@@ -156,6 +156,7 @@
                 <span id="detailReason">-</span>
                 <span id="detailTracks">-</span>
                 <span id="detailChecked">-</span>
+                <span id="detailFolderCover" class="hidden"></span>
               </div>
               <div id="problemFiles" class="problem-files hidden">
                 <div class="problem-files-head">
@@ -212,6 +213,7 @@
           <button class="settings-tab" type="button" data-settings-tab="scanning">Scanning</button>
           <button class="settings-tab" type="button" data-settings-tab="artwork">Artwork</button>
           <button class="settings-tab" type="button" data-settings-tab="maintenance">Maintenance</button>
+          <button class="settings-tab" type="button" data-settings-tab="history">History</button>
           <button class="settings-tab" type="button" data-settings-tab="safety">Safety</button>
           <button class="settings-tab" type="button" data-settings-tab="security">Security</button>
         </aside>
@@ -242,6 +244,13 @@
                     <option value="Auto">Auto</option>
                     <option value="Light">Light</option>
                     <option value="Dark">Dark</option>
+                  </select>
+                </label>
+                <label class="setting-field">
+                  <span>Spacing (this browser)</span>
+                  <select id="settingDensity">
+                    <option value="standard">Standard</option>
+                    <option value="comfortable">Comfortable</option>
                   </select>
                 </label>
                 <label class="setting-field">
@@ -319,6 +328,8 @@
               <div class="switch-list">
                 <label><input id="settingSaveFolder" name="save_approved_artwork_to_album_folder" type="checkbox"> Save cover.jpg in album folder</label>
                 <label><input id="settingBackupEmbed" name="backup_before_embed" type="checkbox"> Backup files before embed</label>
+                <label><input id="settingWarnLowConfidence" name="warn_low_confidence" type="checkbox"> Ask before approving a cover with a warning</label>
+                <label><input id="settingDryRun" name="dry_run_embeds" type="checkbox"> Dry run: show what Approve &amp; Embed would do, without changing files</label>
               </div>
             </div>
 
@@ -364,6 +375,26 @@
             <div class="setting-card">
               <div class="setting-card-head">
                 <div>
+                  <h3>Storage</h3>
+                  <p class="setting-note">Cover images downloaded while searching. Covers still waiting for your review are never removed.</p>
+                </div>
+                <button id="refreshStorageBtn" class="ghost" type="button">Refresh</button>
+              </div>
+              <dl id="storageList" class="storage-list">
+                <div><dt>Waiting for review</dt><dd id="storageWaiting">-</dd></div>
+                <div><dt>Handled (rejected, approved, or album finished)</dt><dd id="storageHandled">-</dd></div>
+                <div><dt>Leftover files</dt><dd id="storageLeftover">-</dd></div>
+                <div><dt>Backups of music files (see Safety)</dt><dd id="storageBackups">-</dd></div>
+              </dl>
+              <div class="maintenance-actions">
+                <button id="cleanStorageBtn" class="ghost" type="button" disabled>Clear Handled Artwork</button>
+              </div>
+              <p id="storageResult" class="maintenance-result"></p>
+            </div>
+
+            <div class="setting-card">
+              <div class="setting-card-head">
+                <div>
                   <h3>Diagnostics</h3>
                   <p class="setting-note">Download a small report with build, settings, queue counts, paths, recent jobs, and the selected album.</p>
                 </div>
@@ -379,6 +410,26 @@
                 <button id="cleanupStaleBtn" class="ghost" type="button">Clean Stale Options</button>
               </div>
               <p id="maintenanceResult" class="maintenance-result">No maintenance run this session.</p>
+            </div>
+          </section>
+
+          <section class="settings-panel" data-settings-panel="history">
+            <div class="setting-card">
+              <div class="history-filters">
+                <select id="historyKind" aria-label="Show">
+                  <option value="">Everything</option>
+                  <option value="embeds">Embeds &amp; restores</option>
+                  <option value="searches">Searches &amp; added artwork</option>
+                  <option value="reviews">Reviews (reject, skip, ignore, rework)</option>
+                  <option value="maintenance">Maintenance</option>
+                </select>
+                <input id="historySearch" type="search" placeholder="Artist or album" aria-label="Filter by artist or album">
+              </div>
+              <ol id="historyList" class="history-list"></ol>
+              <div class="history-footer">
+                <span id="historyCount" class="setting-note"></span>
+                <button id="historyMoreBtn" class="ghost hidden" type="button">Show More</button>
+              </div>
             </div>
           </section>
 
@@ -411,6 +462,27 @@
             </div>
           </section>
         </form>
+      </section>
+    </div>
+
+ <div id="shortcutsOverlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="shortcutsTitle">
+      <section class="release-window shortcuts-window">
+        <header class="release-head">
+          <div><h2 id="shortcutsTitle">Keyboard Shortcuts</h2></div>
+          <button id="closeShortcutsBtn" class="ghost" type="button">Close</button>
+        </header>
+        <dl class="shortcut-list">
+          <div><dt><kbd>F</kbd></dt><dd>Find artwork</dd></div>
+          <div><dt><kbd>A</kbd></dt><dd>Approve &amp; embed the selected option</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>Reject the selected option</dd></div>
+          <div><dt><kbd>S</kbd></dt><dd>Skip the album</dd></div>
+          <div><dt><kbd>C</kbd></dt><dd>Convert the current artwork</dd></div>
+          <div><dt><kbd>N</kbd></dt><dd>Next album that needs work</dd></div>
+          <div><dt><kbd>/</kbd></dt><dd>Search the queue</dd></div>
+          <div><dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd></dt><dd>Previous / next option in the cover viewer</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>Close a dialog or the viewer</dd></div>
+          <div><dt><kbd>?</kbd></dt><dd>Show this list</dd></div>
+        </dl>
       </section>
     </div>
 

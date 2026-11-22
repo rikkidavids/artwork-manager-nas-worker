@@ -35,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.58'
-APP_BUILD = '5.58'
+WORKER_BUILD = '5.59'
+APP_BUILD = '5.59'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -45,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.58 gives the review screen room to breathe: thumbnail options, pinned actions.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.59 adds History, Storage cleanup, dry run embeds and a shortcuts list (press ?).'
 )
 
 
@@ -248,7 +248,7 @@ def finish_job(job_id: str, started_mono: float, ok: bool, result: Dict[str, Any
             for key in ('checked', 'changed', 'skipped', 'unavailable', 'removed', 'affected_albums', 'reclassified'):
                 if key in result:
                     record[key] = result.get(key)
-            for key in ('candidate_count', 'saved_candidate_ids', 'status', 'reason', 'stopped'):
+            for key in ('candidate_count', 'saved_candidate_ids', 'status', 'reason', 'stopped', 'dry_run'):
                 if key in result:
                     record[key] = result.get(key)
             deep = result.get('deep_file_check') if isinstance(result.get('deep_file_check'), dict) else None
@@ -877,6 +877,8 @@ def web_default_settings() -> Dict[str, Any]:
         'save_approved_artwork_to_album_folder': web_bool(os.environ.get('AMW_SAVE_FOLDER_COVER'), False),
         'max_embedded_artwork_size': web_int(os.environ.get('AMW_MAX_EMBEDDED_ARTWORK_SIZE') or 0, 0, 0, 5000),
         'backup_before_embed': True,
+        'dry_run_embeds': False,
+        'warn_low_confidence': True,
         'max_candidates_per_album': web_int(os.environ.get('AMW_MAX_CANDIDATES_PER_ALBUM') or 5, 5, 1, 25),
         'parallel_provider_workers': web_int(os.environ.get('AMW_PROVIDER_WORKERS') or 2, 2, 1, 4),
         'deezer_enabled': web_bool(os.environ.get('AMW_DEEZER_ENABLED'), True),
@@ -913,6 +915,8 @@ def web_get_settings() -> Dict[str, Any]:
     settings['save_approved_artwork_to_album_folder'] = web_bool(settings.get('save_approved_artwork_to_album_folder'), False)
     settings['max_embedded_artwork_size'] = web_int(settings.get('max_embedded_artwork_size'), 0, 0, 5000)
     settings['backup_before_embed'] = web_bool(settings.get('backup_before_embed'), True)
+    settings['dry_run_embeds'] = web_bool(settings.get('dry_run_embeds'), False)
+    settings['warn_low_confidence'] = web_bool(settings.get('warn_low_confidence'), True)
     settings['max_candidates_per_album'] = web_int(settings.get('max_candidates_per_album'), 5, 1, 25)
     settings['parallel_provider_workers'] = web_int(settings.get('parallel_provider_workers'), 2, 1, 4)
     settings['deezer_enabled'] = web_bool(settings.get('deezer_enabled'), True)
@@ -940,6 +944,8 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
         'save_approved_artwork_to_album_folder',
         'max_embedded_artwork_size',
         'backup_before_embed',
+        'dry_run_embeds',
+        'warn_low_confidence',
         'max_candidates_per_album',
         'parallel_provider_workers',
         'deezer_enabled',
@@ -971,6 +977,8 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
     current['save_approved_artwork_to_album_folder'] = web_bool(current.get('save_approved_artwork_to_album_folder'), False)
     current['max_embedded_artwork_size'] = web_int(current.get('max_embedded_artwork_size'), 0, 0, 5000)
     current['backup_before_embed'] = web_bool(current.get('backup_before_embed'), True)
+    current['dry_run_embeds'] = web_bool(current.get('dry_run_embeds'), False)
+    current['warn_low_confidence'] = web_bool(current.get('warn_low_confidence'), True)
     current['max_candidates_per_album'] = web_int(current.get('max_candidates_per_album'), 5, 1, 25)
     current['parallel_provider_workers'] = web_int(current.get('parallel_provider_workers'), 2, 1, 4)
     current['deezer_enabled'] = web_bool(current.get('deezer_enabled'), True)
@@ -1358,6 +1366,118 @@ def web_recent_history(limit: int = 15) -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+HISTORY_KINDS = {
+    'embeds': ('web_approve_embed', 'web_convert_current', 'web_restore_backup'),
+    'searches': ('web_artwork_search', 'web_manual_import', 'web_release_import'),
+    'reviews': ('web_reject_candidate', 'web_reject_all_candidates', 'web_skip_album', 'web_mark_good',
+                'web_ignore_album', 'web_rework_album', 'web_recheck_album'),
+    'maintenance': ('web_repair_queue', 'web_cleanup_stale_candidates', 'web_storage_cleanup'),
+}
+
+
+def _plural(n: Any, word: str) -> str:
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return f'{n} {word}' + ('' if n == 1 else 's')
+
+
+def web_history_summary(action: str, data: Dict[str, Any]) -> Tuple[str, str]:
+    """(short label, one-line detail) for a history row, in plain words."""
+    result = data.get('result') if isinstance(data.get('result'), dict) else {}
+    if action == 'web_approve_embed':
+        if result.get('dry_run'):
+            return 'Dry run (nothing changed)', f"Approve & Embed would change {_plural(result.get('updated'), 'file')}"
+        failed = len(result.get('failed') or [])
+        detail = f"Cover written to {_plural(result.get('updated'), 'file')}"
+        return 'Approved & embedded', detail + (f', {failed} failed' if failed else '')
+    if action == 'web_convert_current':
+        return 'Converted current cover', f"{_plural(result.get('updated'), 'file')} updated"
+    if action == 'web_restore_backup':
+        return 'Restored backup', f"{_plural(data.get('restored'), 'file')} restored" + (f", {len(data.get('failed') or [])} failed" if data.get('failed') else '')
+    if action == 'web_artwork_search':
+        return 'Searched for artwork', f"{_plural(data.get('candidate_count'), 'option')} found"
+    if action == 'web_manual_import':
+        return 'Added artwork', 'From a link' if data.get('source_url') else f"Uploaded {data.get('filename') or 'an image'}"
+    if action == 'web_release_import':
+        return 'Chose a release', f"{_plural(len(data.get('candidate_ids') or []), 'option')} added"
+    if action == 'web_reject_candidate':
+        return 'Rejected an option', f"{_plural(data.get('remaining_candidates'), 'option')} left"
+    if action == 'web_reject_all_candidates':
+        return 'Rejected all options', _plural(data.get('rejected'), 'option') + ' rejected'
+    if action == 'web_skip_album':
+        return 'Skipped', ''
+    if action == 'web_mark_good':
+        return 'Marked good', ''
+    if action == 'web_ignore_album':
+        return 'Ignored', ''
+    if action == 'web_rework_album':
+        return 'Sent back to rework', ''
+    if action == 'web_recheck_album':
+        return 'Rechecked', str(data.get('reason') or '')[:120]
+    if action == 'web_repair_queue':
+        return 'Repaired queue', ''
+    if action == 'web_cleanup_stale_candidates':
+        return 'Cleaned stale options', _plural(data.get('removed'), 'option') + ' removed'
+    if action == 'web_storage_cleanup':
+        freed = int(data.get('freed_bytes') or 0)
+        return 'Cleared storage', f"{_plural(data.get('removed_files'), 'file')}, {freed / (1024 * 1024):.1f} MB freed"
+    return action.replace('web_', '').replace('_', ' ').capitalize(), ''
+
+
+def web_history_page(params: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        limit = max(1, min(int(params.get('limit') or 50), 200))
+        offset = max(0, int(params.get('offset') or 0))
+    except (TypeError, ValueError):
+        limit, offset = 50, 0
+    kind = str(params.get('kind') or '').strip()
+    album_key = str(params.get('album_key') or '').strip()
+    query = str(params.get('q') or '').strip().lower()
+    where, args = [], []
+    if kind in HISTORY_KINDS:
+        actions = HISTORY_KINDS[kind]
+        where.append('h.action IN (' + ','.join('?' * len(actions)) + ')')
+        args.extend(actions)
+    if album_key:
+        where.append('h.album_key=?')
+        args.append(album_key)
+    if query:
+        where.append("(LOWER(COALESCE(a.artist,'')) LIKE ? OR LOWER(COALESCE(a.album,'')) LIKE ?)")
+        args.extend([f'%{query}%', f'%{query}%'])
+    clause = ('WHERE ' + ' AND '.join(where)) if where else ''
+    with db_connect() as conn:
+        total = conn.execute(f'SELECT COUNT(*) FROM history h LEFT JOIN albums a ON a.album_key=h.album_key {clause}', args).fetchone()[0]
+        rows = conn.execute(
+            f'''SELECT h.id, h.album_key, h.action, h.payload, h.created_at, a.artist, a.album
+                FROM history h LEFT JOIN albums a ON a.album_key=h.album_key {clause}
+                ORDER BY h.id DESC LIMIT ? OFFSET ?''',
+            [*args, limit, offset],
+        ).fetchall()
+    entries = []
+    for row in rows:
+        try:
+            data = json.loads(row['payload'] or '{}')
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:
+            data = {}
+        label, detail = web_history_summary(str(row['action'] or ''), data)
+        entries.append({
+            'id': row['id'],
+            'album_key': row['album_key'] or '',
+            'artist': row['artist'] or '',
+            'album': row['album'] or '',
+            'action': row['action'],
+            'label': label,
+            'detail': detail,
+            'created_at': row['created_at'],
+            'can_restore': row['action'] == 'web_approve_embed' and bool((data.get('result') or {}).get('backups')) if isinstance(data.get('result'), dict) else False,
+        })
+    return {'ok': True, 'total': total, 'offset': offset, 'limit': limit, 'entries': entries}
+
+
 def web_diagnostics_payload(album_key: str = '') -> Dict[str, Any]:
     selected = web_get_album(album_key) if album_key else None
     status = status_payload(public=False)
@@ -1435,7 +1555,11 @@ def web_delete_candidate_ids(candidate_ids: List[Any]) -> int:
 def web_cleanup_stale_candidates() -> Dict[str, Any]:
     web_block_if_busy('stale option cleanup')
     with db_connect() as conn:
-        rows = conn.execute('SELECT id, album_key, image_path FROM candidates').fetchall()
+        # Only options still waiting for review. Rejected and approved rows are
+        # kept even without an image file: they remember which covers you've
+        # already handled, so searches don't offer them again.
+        rows = conn.execute('SELECT id, album_key, image_path FROM candidates '
+                            'WHERE COALESCE(rejected, 0)=0 AND COALESCE(approved, 0)=0').fetchall()
     stale_ids = []
     affected = set()
     for row in rows:
@@ -1474,6 +1598,101 @@ def web_cleanup_stale_candidates() -> Dict[str, Any]:
         'reclassified': reclassified,
         'counts': web_queue_counts(),
     }
+
+
+def web_dir_size(path: Path) -> Tuple[int, int]:
+    total = files = 0
+    if not path.exists():
+        return 0, 0
+    for root, _dirs, names in os.walk(path):
+        for name in names:
+            try:
+                total += (Path(root) / name).stat().st_size
+                files += 1
+            except OSError:
+                pass
+    return total, files
+
+
+def web_storage_scan() -> Dict[str, List[Path]]:
+    """Sort downloaded artwork files into: waiting for review, handled, leftover."""
+    with db_connect() as conn:
+        rows = conn.execute(
+            'SELECT c.image_path, c.approved, c.rejected, a.status FROM candidates c '
+            'LEFT JOIN albums a ON a.album_key=c.album_key'
+        ).fetchall()
+    known: Dict[str, str] = {}
+    for row in rows:
+        try:
+            path = str(web_data_path(row['image_path']).resolve()) if row['image_path'] else ''
+        except Exception:
+            path = ''
+        if not path:
+            continue
+        handled = bool(row['approved']) or bool(row['rejected']) or str(row['status'] or '') in DONE_STATUSES
+        # A file shared by several rows counts as waiting if any row still needs it.
+        if known.get(path) != 'waiting':
+            known[path] = 'handled' if handled else 'waiting'
+    out: Dict[str, List[Path]] = {'waiting': [], 'handled': [], 'leftover': []}
+    if TEMP_CANDIDATE_DIR.exists():
+        for root, _dirs, names in os.walk(TEMP_CANDIDATE_DIR):
+            for name in names:
+                file_path = Path(root) / name
+                out[known.get(str(file_path.resolve()), 'leftover')].append(file_path)
+    return out
+
+
+def web_storage_report() -> Dict[str, Any]:
+    groups = web_storage_scan()
+
+    def summary(paths: List[Path]) -> Dict[str, int]:
+        size = 0
+        for path in paths:
+            try:
+                size += path.stat().st_size
+            except OSError:
+                pass
+        return {'bytes': size, 'files': len(paths)}
+
+    backups_bytes, backup_files = web_dir_size(BACKUP_ROOT)
+    db_bytes = sum(p.stat().st_size for p in DATA_ROOT.glob('artwork_manager.sqlite3*') if p.is_file())
+    return {
+        'ok': True,
+        'waiting': summary(groups['waiting']),
+        'handled': summary(groups['handled']),
+        'leftover': summary(groups['leftover']),
+        'backups': {'bytes': backups_bytes, 'files': backup_files},
+        'database': {'bytes': db_bytes},
+    }
+
+
+def web_storage_cleanup(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Delete handled and/or leftover artwork downloads. Covers waiting for review are never touched."""
+    kinds = [k for k in (payload.get('kinds') or ['handled', 'leftover']) if k in ('handled', 'leftover')]
+    if not kinds:
+        raise ValueError('Nothing to clean up was chosen.')
+    web_block_if_busy('storage cleanup')
+    groups = web_storage_scan()
+    freed = removed = 0
+    for kind in kinds:
+        for path in groups[kind]:
+            try:
+                size = path.stat().st_size
+                path.unlink()
+                freed += size
+                removed += 1
+            except OSError:
+                pass
+    # Tidy empty per-album folders.
+    if TEMP_CANDIDATE_DIR.exists():
+        for child in TEMP_CANDIDATE_DIR.iterdir():
+            try:
+                if child.is_dir() and not any(child.iterdir()):
+                    child.rmdir()
+            except OSError:
+                pass
+    web_add_history('', 'web_storage_cleanup', {'kinds': kinds, 'removed_files': removed, 'freed_bytes': freed})
+    return {'ok': True, 'removed_files': removed, 'freed_bytes': freed, 'storage': web_storage_report()}
 
 
 def web_recheck_album_row(row: sqlite3.Row, settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -1803,10 +2022,19 @@ def web_album_problem_files(album_key: str) -> Dict[str, Any]:
         tolerance=target_tolerance(settings.get('target_size_match_mode')),
     )
     updated_album = web_persist_album_deep_check(row, settings, result, 'problem_files')
+    try:
+        folder_cover = album_folder_cover_status(album_path, target, None, target_tolerance(settings.get('target_size_match_mode')))
+        if folder_cover.get('path'):
+            folder_cover['name'] = Path(folder_cover['path']).name
+            folder_cover.pop('path', None)
+    except Exception as exc:
+        folder_cover = {'ok': False, 'issue': str(exc)}
+    folder_cover['expected'] = bool(settings.get('save_approved_artwork_to_album_folder'))
     return {
         'ok': True,
         'album_key': album_key,
         'target_size': target,
+        'folder_cover': folder_cover,
         'album': updated_album or web_get_album(album_key),
         'counts': web_queue_counts(settings),
         **result,
@@ -3692,6 +3920,8 @@ def web_approve_candidate(album_key: str, candidate_id: Any, job_id: str = '') -
     folder = safe_path(album.get('album_path') or '')
     target = int(settings.get('preferred_artwork_size') or settings.get('scan_min_artwork_size') or 1000)
     max_embed = int(settings.get('max_embedded_artwork_size') or target or 0)
+    if settings.get('dry_run_embeds'):
+        return web_dry_run_embed(album, candidate, image_bytes, folder, settings, max_embed, job_id)
     update_job(job_id, label=f"Embedding {album.get('artist')} — {album.get('album')}")
     result = embed_album_job({
         'album_folder': str(folder),
@@ -3761,6 +3991,29 @@ def web_approve_candidate(album_key: str, candidate_id: Any, job_id: str = '') -
         'deep_file_check': deep,
         'album': web_get_album(album_key),
     }
+
+
+def web_dry_run_embed(album: Dict[str, Any], candidate: Dict[str, Any], image_bytes: bytes, folder: Path,
+                      settings: Dict[str, Any], max_embed: int, job_id: str = '') -> Dict[str, Any]:
+    """Work out what Approve & Embed would do, without changing any file or the album's status."""
+    update_job(job_id, label=f"Dry run: {album.get('artist')} — {album.get('album')}")
+    if not folder.is_dir():
+        raise ValueError('Album folder does not exist inside the container')
+    files = list(iter_music_files(folder))
+    if not files:
+        raise ValueError('No supported audio files found in this album folder')
+    prepared, _mime = prepare_jpeg_bytes_from_bytes(image_bytes, max_size=max_embed or None, make_square=True)
+    width, height = image_dimensions_from_bytes(prepared) or (None, None)
+    parts = [f'Dry run, nothing changed. Would embed a {width}×{height} JPEG into {len(files)} track' + ('' if len(files) == 1 else 's')]
+    parts.append('after backing them up' if settings.get('backup_before_embed') else 'without a backup')
+    reason = ', '.join(parts) + '.'
+    if settings.get('save_approved_artwork_to_album_folder'):
+        reason += ' Would also save cover.jpg in the album folder.'
+    result = {'dry_run': True, 'updated': len(files), 'total': len(files), 'image_width': width, 'image_height': height,
+              'failed': [], 'backups': []}
+    web_add_history(album.get('album_key') or '', 'web_approve_embed', {'candidate_id': int(candidate.get('id') or candidate.get('candidate_id') or 0), 'result': result})
+    return {'ok': True, 'dry_run': True, 'status': album.get('status') or '', 'reason': reason, 'result': result,
+            'album': web_get_album(album.get('album_key') or '')}
 
 
 def web_convert_current_artwork(album_key: str, job_id: str = '') -> Dict[str, Any]:
@@ -5277,6 +5530,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_bytes(200, data, mime)
             return
+        if route == '/api/history':
+            if not self._auth_ok():
+                self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            params = {k: v[-1] for k, v in parse_qs(urlparse(self.path).query).items()}
+            self._send(200, web_history_page(params))
+            return
+        if route == '/api/storage':
+            if not self._auth_ok():
+                self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
+                return
+            self._send(200, web_storage_report())
+            return
         if route == '/api/artwork/candidate':
             if not self._auth_ok():
                 self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
@@ -5383,6 +5649,9 @@ class Handler(BaseHTTPRequestHandler):
                 album_key = str(payload.get('album_key') or '').strip()
                 result = web_album_simple_action(album_key, 'reviewed_skipped', 'Skipped for now.', 'web_skip_album')
                 self._send(200, result)
+                return
+            if route == '/api/storage/cleanup':
+                self._send(200, web_storage_cleanup(payload))
                 return
             if route == '/api/jobs/stop':
                 self._send(200, request_job_stop(str(payload.get('job_id') or '').strip()))
