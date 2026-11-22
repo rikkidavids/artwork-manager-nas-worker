@@ -43,10 +43,21 @@ echo "Container status:"
 $COMPOSE ps
 
 echo
-echo "Local worker root endpoint, if run on the NAS:"
-echo "  curl -s http://127.0.0.1:8765/"
-echo
-echo "From your Mac, check:"
-echo "  http://YOUR-NAS-IP:8765/"
-echo
-echo "You should see worker_build 5.46 and api 5."
+echo "Waiting for the worker to answer..."
+PORT="${AMW_HOST_PORT:-8765}"
+if [ -f .env ]; then
+  ENV_PORT=$(sed -n 's/^AMW_HOST_PORT=//p' .env | tail -n 1)
+  [ -n "$ENV_PORT" ] && PORT="$ENV_PORT"
+fi
+BUILD=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  BUILD=$(curl -s "http://127.0.0.1:${PORT}/" 2>/dev/null | sed -n 's/.*"worker_build": *"\([^"]*\)".*/\1/p')
+  [ -n "$BUILD" ] && break
+  sleep 2
+done
+if [ -n "$BUILD" ]; then
+  echo "Artwork Manager is running build ${BUILD}."
+  echo "Open it at http://YOUR-NAS-IP:${PORT}/app/"
+else
+  echo "The worker did not answer yet. Check the container log in Container Manager."
+fi
