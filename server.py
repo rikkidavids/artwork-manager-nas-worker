@@ -35,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.55'
-APP_BUILD = '5.55'
+WORKER_BUILD = '5.56'
+APP_BUILD = '5.56'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -45,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.55 fixes multi-disc scanning and reports unreachable artwork sources.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.56 adds Choose Release, import from album page links, Find More and source order.'
 )
 
 
@@ -800,6 +800,19 @@ def db_connect() -> sqlite3.Connection:
     return conn
 
 
+PROVIDER_KEYS = ('deezer', 'itunes', 'musicbrainz', 'discogs')
+
+
+def web_provider_order(settings: Dict[str, Any]) -> List[str]:
+    """The user's source order, cleaned up: known sources only, each once, none missing."""
+    raw = settings.get('provider_order')
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(',')]
+    order = [str(item).strip().lower() for item in (raw or []) if str(item).strip().lower() in PROVIDER_KEYS]
+    order = list(dict.fromkeys(order))
+    return order + [key for key in PROVIDER_KEYS if key not in order]
+
+
 def web_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return bool(default)
@@ -845,6 +858,7 @@ def web_default_settings() -> Dict[str, Any]:
         'itunes_enabled': web_bool(os.environ.get('AMW_ITUNES_ENABLED'), True),
         'musicbrainz_enabled': web_bool(os.environ.get('AMW_MUSICBRAINZ_ENABLED'), True),
         'discogs_enabled': web_bool(os.environ.get('AMW_DISCOGS_ENABLED'), True),
+        'provider_order': list(PROVIDER_KEYS),
         'discogs_token': (os.environ.get('AMW_DISCOGS_TOKEN') or '').strip(),
         'theme_mode': os.environ.get('AMW_THEME_MODE') or 'Auto',
     }
@@ -881,6 +895,7 @@ def web_get_settings() -> Dict[str, Any]:
     settings['musicbrainz_enabled'] = web_bool(settings.get('musicbrainz_enabled'), True)
     settings['discogs_enabled'] = web_bool(settings.get('discogs_enabled'), True)
     settings['discogs_token'] = str(settings.get('discogs_token') or '').strip()
+    settings['provider_order'] = web_provider_order(settings)
     theme = str(settings.get('theme_mode') or 'Auto').strip().lower()
     settings['theme_mode'] = {'light': 'Light', 'dark': 'Dark', 'auto': 'Auto'}.get(theme, 'Auto')
     return settings
@@ -906,6 +921,7 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
         'itunes_enabled',
         'musicbrainz_enabled',
         'discogs_enabled',
+        'provider_order',
         'theme_mode',
     }
     for key in allowed:
@@ -937,6 +953,7 @@ def web_save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
     current['musicbrainz_enabled'] = web_bool(current.get('musicbrainz_enabled'), True)
     current['discogs_enabled'] = web_bool(current.get('discogs_enabled'), True)
     current['discogs_token'] = str(current.get('discogs_token') or '').strip()
+    current['provider_order'] = web_provider_order(current)
     theme = str(current.get('theme_mode') or 'Auto').strip().lower()
     current['theme_mode'] = {'light': 'Light', 'dark': 'Dark', 'auto': 'Auto'}.get(theme, 'Auto')
     with db_connect() as conn:
@@ -2459,7 +2476,7 @@ def web_download_candidate_image(
     settings: Dict[str, Any],
     option_index: int,
 ) -> Dict[str, Any] | None:
-    if not image_url:
+    if not image_url or image_url in (settings.get('_skip_urls') or ()):
         return None
     try:
         response = session.get(image_url, timeout=20)
@@ -3085,6 +3102,370 @@ def web_discogs_candidates(album: Dict[str, Any], max_candidates: int, settings:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Exact releases: "Choose Release" and importing from a pasted link.
+# Unlike a normal search, the user has picked this release themselves, so its
+# covers are kept even when they're below the minimum size (they still get
+# the usual low-resolution warning) and no artist/album matching is applied.
+# ---------------------------------------------------------------------------
+
+RELEASE_SOURCE_LABELS = {'deezer': 'Deezer', 'itunes': 'Apple/iTunes', 'musicbrainz': 'MusicBrainz', 'discogs': 'Discogs'}
+MB_UUID = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+
+def web_json_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update({'User-Agent': f'ArtworkManagerNAS/{WORKER_BUILD} +https://github.com/rikkidavids/artwork-manager-nas-worker',
+                            'Accept': 'application/json'})
+    return session
+
+
+def web_unwrap_link(raw: Any) -> List[str]:
+    """The pasted text plus any URL wrapped inside it (Google/Bing redirects, share links)."""
+    text = str(raw or '').strip().strip('<>"\'')
+    out: List[str] = []
+
+    def add(value: Any) -> None:
+        value = str(value or '').strip()
+        if value and value not in out:
+            out.append(value)
+
+    add(text)
+    add(unquote(text))
+    for value in list(out):
+        try:
+            query = parse_qs(urlparse(value).query or '')
+        except Exception:
+            continue
+        for key in ('imgurl', 'url', 'u', 'q', 'mediaurl'):
+            for nested in query.get(key, []):
+                if nested.startswith('http'):
+                    add(nested)
+                    add(unquote(nested))
+    return out
+
+
+def web_parse_release_link(raw: Any, session: requests.Session | None = None) -> Dict[str, str]:
+    """Work out what a pasted link points at.
+
+    Returns {'kind': 'release', 'source': ..., 'id': ...}, {'kind': 'image', 'url': ...}
+    or raises ValueError with a plain explanation.
+    """
+    values = web_unwrap_link(raw)
+    if not values or not values[0]:
+        raise ValueError('Paste a link first.')
+    joined = ' '.join(values)
+    lower = joined.lower()
+
+    # Deezer short share links (deezer.page.link/..., link.deezer.com/...) redirect to the album page.
+    if ('deezer.page.link' in lower or 'link.deezer.com' in lower) and 'deezer.com/' not in lower.replace('link.deezer.com', ''):
+        try:
+            sess = session or web_json_session()
+            final = sess.get(values[0], timeout=15, allow_redirects=True).url
+            values.append(final)
+            joined, lower = ' '.join(values), ' '.join(values).lower()
+        except Exception:
+            pass
+
+    for value in values:
+        try:
+            parsed = urlparse(value)
+        except Exception:
+            continue
+        if parsed.scheme in ('http', 'https') and (parsed.path or '').lower().endswith(IMAGE_EXTENSIONS):
+            return {'kind': 'image', 'url': value}
+
+    m = re.search(r'deezer\.com/(?:[a-z]{2}(?:-[a-z]{2})?/)?album/(\d+)', joined, re.I)
+    if m:
+        return {'kind': 'release', 'source': 'deezer', 'id': m.group(1)}
+    if 'music.apple.com' in lower or 'itunes.apple.com' in lower:
+        m = re.search(r'/album/(?:[^/?#]+/)?(?:id)?(\d{5,})', joined, re.I) or re.search(r'[?&]id=(\d{5,})', joined, re.I)
+        if m:
+            return {'kind': 'release', 'source': 'itunes', 'id': m.group(1)}
+        raise ValueError('That Apple Music link has no album ID in it. Open the album page and copy its link.')
+    m = re.search(rf'musicbrainz\.org/release-group/({MB_UUID})', joined, re.I)
+    if m:
+        return {'kind': 'release', 'source': 'musicbrainz-group', 'id': m.group(1).lower()}
+    m = re.search(rf'musicbrainz\.org/release/({MB_UUID})', joined, re.I)
+    if m:
+        return {'kind': 'release', 'source': 'musicbrainz', 'id': m.group(1).lower()}
+    m = re.search(r'discogs\.com/(?:[a-z]{2}/)?(?:[^/?#]+/)?(release|master)/(\d+)', joined, re.I)
+    if m:
+        return {'kind': 'release', 'source': 'discogs' if m.group(1).lower() == 'release' else 'discogs-master', 'id': m.group(2)}
+    if re.fullmatch(MB_UUID, values[0], re.I):
+        return {'kind': 'release', 'source': 'musicbrainz', 'id': values[0].lower()}
+    for value in values:
+        if urlparse(value).scheme in ('http', 'https'):
+            # Unknown page: treat it as an image link and let the download decide.
+            return {'kind': 'image', 'url': value}
+    raise ValueError('That doesn\'t look like a link. Paste an album page from Deezer, Apple Music, MusicBrainz or Discogs, or an image link.')
+
+
+def web_release_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Settings for an explicitly chosen release: keep small covers (they're flagged, not dropped)."""
+    relaxed = dict(settings)
+    relaxed['scan_min_artwork_size'] = 1
+    return relaxed
+
+
+def web_release_cover_candidates(source: str, release_id: str, album: Dict[str, Any], settings: Dict[str, Any], limit: int = 6) -> List[Dict[str, Any]]:
+    """Download the covers of one exact release from one source."""
+    session = web_json_session()
+    relaxed = web_release_settings(settings)
+    release_id = str(release_id or '').strip()
+    out: List[Dict[str, Any]] = []
+    if not release_id:
+        raise ValueError('That release has no ID.')
+
+    if source == 'deezer':
+        item = web_http_json(session, f'https://api.deezer.com/album/{quote(release_id)}', raise_unreachable=True)
+        if not isinstance(item, dict) or item.get('error') or not item.get('id'):
+            raise ValueError('Deezer has no album with that link.')
+        artist = ((item.get('artist') or {}) if isinstance(item.get('artist'), dict) else {}).get('name') or ''
+        title = item.get('title') or ''
+        year = str(item.get('release_date') or '')[:4]
+        meta = {'source_artist': artist, 'source_title': title, 'source_year': year, 'source_page': item.get('link') or '',
+                'label': item.get('label') or '', 'track_count': item.get('nb_tracks') or ''}
+        for detail, url in (('XL cover', item.get('cover_xl')), ('Large cover', item.get('cover_big'))):
+            if url and len(out) < limit:
+                cand = web_download_candidate_image(session, album, 'Deezer', detail, url, title + (f' ({year})' if year else ''),
+                                                    f'deezer:{item.get("id")}', meta, relaxed, len(out) + 1)
+                if cand:
+                    out.append(cand)
+                    break  # XL is enough when it downloads; Large is the fallback.
+        return out
+
+    if source == 'itunes':
+        data = web_http_json(session, f'https://itunes.apple.com/lookup?id={quote(release_id)}&entity=album', raise_unreachable=True)
+        results = data.get('results') if isinstance(data, dict) else []
+        item = next((row for row in results or [] if row.get('collectionId') and row.get('wrapperType') in ('collection', None)), None)
+        if not item:
+            raise ValueError('Apple Music has no album with that link.')
+        title = item.get('collectionName') or ''
+        year = str(item.get('releaseDate') or '')[:4]
+        meta = {'source_artist': item.get('artistName') or '', 'source_title': title, 'source_year': year,
+                'country': item.get('country') or '', 'track_count': item.get('trackCount') or '',
+                'source_page': item.get('collectionViewUrl') or ''}
+        for detail, url in web_itunes_artwork_variants(item.get('artworkUrl100') or ''):
+            if len(out) >= limit:
+                break
+            cand = web_download_candidate_image(session, album, 'iTunes', detail, url, title + (f' ({year})' if year else ''),
+                                                f'itunes:{item.get("collectionId")}', meta, relaxed, len(out) + 1)
+            if cand:
+                out.append(cand)
+                break  # the first (largest) size that downloads is the one to offer
+        return out
+
+    if source in ('musicbrainz', 'musicbrainz-group'):
+        if source == 'musicbrainz':
+            release = web_mb_fetch_release(session, release_id)
+            if not release:
+                raise ValueError('MusicBrainz has no release with that link.')
+            out = web_mb_release_candidates(session, album, release, 2, relaxed)
+            if not out:
+                raise ValueError('That MusicBrainz release has no cover art in the Cover Art Archive.')
+            return out
+        data = web_http_json(session, f'https://musicbrainz.org/ws/2/release?release-group={quote(release_id)}&fmt=json&limit=25', raise_unreachable=True)
+        for release in (data or {}).get('releases') or []:
+            out = web_mb_release_candidates(session, album, release, 2, relaxed)
+            if out:
+                return out
+        raise ValueError('None of the releases in that MusicBrainz group have cover art.')
+
+    if source in ('discogs', 'discogs-master'):
+        dsession = web_discogs_session(settings)
+        if dsession is None:
+            raise ValueError('Discogs links need a Discogs token. Add one in Settings > Artwork.')
+        if source == 'discogs-master':
+            master = web_http_json(dsession, f'{DISCOGS_API}/masters/{quote(release_id)}', raise_unreachable=True)
+            release_id = str((master or {}).get('main_release') or '')
+            if not release_id:
+                raise ValueError('Discogs has no master release with that link.')
+        info = web_http_json(dsession, f'{DISCOGS_API}/releases/{quote(release_id)}', raise_unreachable=True) or {}
+        images = [img for img in (info.get('images') or []) if isinstance(img, dict) and img.get('uri')]
+        images.sort(key=lambda img: (img.get('type') != 'primary', -int(img.get('width') or 0) * int(img.get('height') or 0)))
+        if not images:
+            raise ValueError('That Discogs release has no images.')
+        title = info.get('title') or ''
+        year = str(info.get('year') or '')[:4]
+        artists = ', '.join(a.get('name', '') for a in (info.get('artists') or []) if isinstance(a, dict))
+        meta = {'source_artist': artists, 'source_title': title, 'source_year': year, 'country': info.get('country') or '',
+                'format': ', '.join(f.get('name', '') for f in (info.get('formats') or []) if isinstance(f, dict)),
+                'source_page': f'https://www.discogs.com/release/{release_id}'}
+        for image in images:
+            if len(out) >= min(limit, 3):
+                break
+            detail = 'Front cover' if image.get('type') == 'primary' else 'Release image'
+            cand = web_download_candidate_image(dsession, album, 'Discogs', detail, image['uri'], title + (f' ({year})' if year else ''),
+                                                f'discogs:{release_id}', meta, relaxed, len(out) + 1)
+            if cand:
+                out.append(cand)
+        return out
+
+    raise ValueError(f'Unknown source: {source}')
+
+
+def web_save_release_candidates(album_key: str, candidates: List[Dict[str, Any]], how: str) -> Tuple[List[int], int]:
+    """Save downloaded covers as options, skipping ones the album already has."""
+    known = {str(c.get('source_url') or '') for c in web_list_candidates(album_key, include_rejected=False)}
+    saved: List[int] = []
+    duplicates = 0
+    for cand in candidates:
+        if str(cand.get('source_url') or '') in known:
+            duplicates += 1
+            web_cleanup_candidate_file(cand)
+            continue
+        cand['state_reason'] = how
+        saved.append(web_add_candidate(album_key, cand))
+        known.add(str(cand.get('source_url') or ''))
+    return saved, duplicates
+
+
+def web_finish_release_import(album_key: str, saved: List[int], duplicates: int, source_label: str, history: Dict[str, Any]) -> Dict[str, Any]:
+    if not saved and duplicates:
+        raise ValueError(f'That cover from {source_label} is already one of this album\'s options.')
+    if not saved:
+        raise ValueError(f'{source_label} didn\'t return a usable cover for that release.')
+    count = web_active_candidate_count(album_key)
+    web_set_album_status(album_key, 'candidate_found', f'{count} artwork option(s) ready.', {'last_manual_import_at': now()})
+    web_add_history(album_key, 'web_release_import', {**history, 'candidate_ids': saved})
+    return {
+        'ok': True,
+        'added': len(saved),
+        'source': source_label,
+        'candidate_id': saved[0],
+        'candidate_count': count,
+        'candidates': [web_public_candidate(c) for c in web_list_candidates(album_key)],
+        'album': web_get_album(album_key),
+    }
+
+
+def web_import_release(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Import the covers of a release chosen in the Choose Release list."""
+    album_key = str(payload.get('album_key') or '').strip()
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    source = str(payload.get('source') or '').strip().lower()
+    release_id = str(payload.get('id') or '').strip()
+    settings = web_get_settings()
+    try:
+        cands = web_release_cover_candidates(source, release_id, album, settings)
+    except SourceUnreachable as exc:
+        raise ValueError(f'{RELEASE_SOURCE_LABELS.get(source.split("-")[0], source)} couldn\'t be reached. Check the NAS internet connection.') from exc
+    label = RELEASE_SOURCE_LABELS.get(source.split('-')[0], source)
+    saved, duplicates = web_save_release_candidates(album_key, cands, f'Chosen release from {label}')
+    return web_finish_release_import(album_key, saved, duplicates, label, {'source': source, 'id': release_id})
+
+
+def web_import_from_link(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Import a cover from any pasted link: an album page or a direct image."""
+    album_key = str(payload.get('album_key') or '').strip()
+    if not web_get_album(album_key):
+        raise ValueError('Album not found')
+    target = web_parse_release_link(payload.get('url'))
+    if target['kind'] == 'image':
+        return web_add_manual_candidate({'album_key': album_key, 'source_url': target['url']})
+    return web_import_release({'album_key': album_key, 'source': target['source'], 'id': target['id']})
+
+
+def web_release_row(source: str, rid: Any, title: Any, artist: Any, year: Any, album: Dict[str, Any], **extra: Any) -> Dict[str, Any]:
+    row = {
+        'source': source,
+        'source_label': RELEASE_SOURCE_LABELS.get(source, source),
+        'id': str(rid or ''),
+        'title': str(title or ''),
+        'artist': str(artist or ''),
+        'year': str(year or '')[:4],
+        'country': str(extra.get('country') or ''),
+        'format': str(extra.get('format') or ''),
+        'label': str(extra.get('label') or ''),
+        'tracks': extra.get('tracks') or '',
+        'thumb': str(extra.get('thumb') or ''),
+        'page': str(extra.get('page') or ''),
+    }
+    row['match'] = bool(web_release_matches(row['artist'], row['title'], row['year'], album))
+    return row
+
+
+def web_search_releases_from(source: str, artist: str, title: str, album: Dict[str, Any], settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    term = quote_plus(' '.join(x for x in (artist, title) if x).strip())
+    session = web_json_session()
+    rows: List[Dict[str, Any]] = []
+    if source == 'deezer':
+        data = web_http_json(session, f'https://api.deezer.com/search/album?q={term}&limit=15', raise_unreachable=True)
+        for item in (data or {}).get('data') or []:
+            artist_name = ((item.get('artist') or {}) if isinstance(item.get('artist'), dict) else {}).get('name')
+            rows.append(web_release_row('deezer', item.get('id'), item.get('title'), artist_name, item.get('release_date'), album,
+                                        tracks=item.get('nb_tracks'), thumb=item.get('cover_medium'), page=item.get('link'),
+                                        format=str(item.get('record_type') or '').title()))
+    elif source == 'itunes':
+        data = web_http_json(session, f'https://itunes.apple.com/search?term={term}&media=music&entity=album&limit=15', raise_unreachable=True)
+        for item in (data or {}).get('results') or []:
+            if item.get('wrapperType') not in ('collection', None):
+                continue
+            rows.append(web_release_row('itunes', item.get('collectionId'), item.get('collectionName'), item.get('artistName'),
+                                        item.get('releaseDate'), album, country=item.get('country'), tracks=item.get('trackCount'),
+                                        thumb=item.get('artworkUrl100'), page=item.get('collectionViewUrl')))
+    elif source == 'musicbrainz':
+        for release in web_mb_search_releases(session, artist, title, year=album.get('year') or '', limit=15):
+            media = release.get('media') or []
+            fmt = ', '.join(sorted({str(m.get('format') or '') for m in media if isinstance(m, dict) and m.get('format')}))
+            label = ', '.join(str((li.get('label') or {}).get('name') or '') for li in (release.get('label-info') or [])[:2] if isinstance(li, dict))
+            rows.append(web_release_row('musicbrainz', release.get('id'), release.get('title'), web_mb_artist_name(release),
+                                        release.get('date'), album, country=release.get('country'), format=fmt, label=label,
+                                        tracks=release.get('track-count') or '',
+                                        thumb=f'https://coverartarchive.org/release/{release.get("id")}/front-250',
+                                        page=f'https://musicbrainz.org/release/{release.get("id")}'))
+    elif source == 'discogs':
+        dsession = web_discogs_session(settings)
+        if dsession is None:
+            return []
+        query = f'type=release&per_page=15&release_title={quote_plus(title)}' + (f'&artist={quote_plus(artist)}' if artist else '')
+        data = web_http_json(dsession, f'{DISCOGS_API}/database/search?{query}', raise_unreachable=True)
+        for item in (data or {}).get('results') or []:
+            item_artist, item_title = web_discogs_split_title(item.get('title'))
+            rows.append(web_release_row('discogs', item.get('id'), item_title, item_artist, item.get('year'), album,
+                                        country=item.get('country'), format=', '.join(str(x) for x in (item.get('format') or [])[:3]),
+                                        label=', '.join(str(x) for x in (item.get('label') or [])[:2]), thumb=item.get('thumb'),
+                                        page=f'https://www.discogs.com/release/{item.get("id")}'))
+    return rows
+
+
+def web_search_releases(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """List releases from every enabled source for the user to choose from (no images downloaded)."""
+    album_key = str(payload.get('album_key') or '').strip()
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    artist = str(payload.get('artist') or album.get('search_artist') or album.get('artist') or '').strip()
+    title = clean_album_name(str(payload.get('album') or album.get('search_album') or album.get('album') or '').strip())
+    if not title:
+        raise ValueError('Enter an album title to search for.')
+    settings = web_get_settings()
+    sources = [s for s in web_provider_order(settings)
+               if web_bool(settings.get(f'{s}_enabled'), True) and (s != 'discogs' or settings.get('discogs_token'))]
+    rows: List[Dict[str, Any]] = []
+    unreachable: List[str] = []
+    with ThreadPoolExecutor(max_workers=max(1, len(sources))) as pool:
+        futures = {pool.submit(web_search_releases_from, s, artist, title, album, settings): s for s in sources}
+        for future, source in futures.items():
+            try:
+                rows.extend(future.result())
+            except Exception:
+                unreachable.append(RELEASE_SOURCE_LABELS[source])
+    order = {s: i for i, s in enumerate(sources)}
+    seen = set()
+    unique = []
+    for row in rows:
+        key = (row['source'], row['id'])
+        if row['id'] and key not in seen:
+            seen.add(key)
+            unique.append(row)
+    unique.sort(key=lambda r: (not r['match'], order.get(r['source'], 9)))
+    return {'ok': True, 'artist': artist, 'album': title, 'releases': unique[:60], 'unreachable_sources': unreachable}
+
+
 WEB_SOURCE_LABELS = {'iTunes': 'Apple/iTunes'}
 
 
@@ -3094,40 +3475,46 @@ def web_album_finished(album_key: str) -> bool:
     return bool(row and str(row['status'] or '') in DONE_STATUSES)
 
 
-def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job_id: str = '') -> Dict[str, Any]:
+def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job_id: str = '', more: bool = False) -> Dict[str, Any]:
     album = web_get_album(album_key)
     if not album:
         raise ValueError('Album not found')
     settings = web_get_settings()
-    target_total = web_int(max_candidates or settings.get('max_candidates_per_album'), 5, 1, 25)
+    per_search = web_int(max_candidates or settings.get('max_candidates_per_album'), 5, 1, 25)
     existing = web_list_candidates(album_key, include_rejected=False)
+    # "Find More" looks for another batch on top of the options already saved.
+    target_total = min(25, len(existing) + per_search) if more else per_search
     if len(existing) >= target_total:
         web_set_album_status(album_key, 'candidate_found', f'{len(existing)} artwork option(s) ready.')
         return {'ok': True, 'candidate_count': len(existing), 'candidates': [web_public_candidate(c) for c in existing]}
     web_set_album_status(album_key, 'searching', 'Searching artwork providers.')
     update_job(job_id, label=f"Searching {album.get('artist')} — {album.get('album')}", candidate_count=len(existing))
 
-    providers = []
-    if web_bool(settings.get('deezer_enabled'), True):
-        providers.append(('Deezer', web_deezer_candidates))
-    if web_bool(settings.get('itunes_enabled'), True):
-        providers.append(('iTunes', web_itunes_candidates))
-    if web_bool(settings.get('musicbrainz_enabled'), True):
-        providers.append(('MusicBrainz', web_musicbrainz_candidates))
-    if web_bool(settings.get('discogs_enabled'), True) and settings.get('discogs_token'):
-        providers.append(('Discogs', web_discogs_candidates))
+    available = {
+        'deezer': ('Deezer', web_deezer_candidates),
+        'itunes': ('iTunes', web_itunes_candidates),
+        'musicbrainz': ('MusicBrainz', web_musicbrainz_candidates),
+        'discogs': ('Discogs', web_discogs_candidates),
+    }
+    # Sources run, and their covers are saved, in the order chosen in Settings.
+    providers = [available[key] for key in web_provider_order(settings)
+                 if web_bool(settings.get(f'{key}_enabled'), True) and (key != 'discogs' or settings.get('discogs_token'))]
     if not providers:
         web_set_album_status(album_key, 'no_candidate', 'No artwork providers are enabled.')
         return {'ok': True, 'candidate_count': len(existing), 'candidates': [web_public_candidate(c) for c in existing], 'message': 'No artwork providers are enabled.'}
 
     provider_limit = max(1, target_total - len(existing))
+    # Skip covers this album already has or you rejected, so sources dig
+    # further into their results instead of offering the same images again.
+    provider_settings = dict(settings)
+    provider_settings['_skip_urls'] = {str(c.get('source_url') or '') for c in web_list_candidates(album_key, include_rejected=True)} - {''}
     fetched: List[Dict[str, Any]] = []
     unreachable: List[str] = []
     failed: List[str] = []
     max_workers = max(1, min(len(providers), int(settings.get('parallel_provider_workers') or 2)))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(provider, album, provider_limit, settings): name
+            executor.submit(provider, album, provider_limit, provider_settings): name
             for name, provider in providers
         }
         for future, name in list(futures.items()):
@@ -3183,6 +3570,7 @@ def web_search_artwork_for_album(album_key: str, max_candidates: Any = None, job
         'last_search_unreachable': unreachable,
         'last_search_failed': failed,
         'last_search_all_failed': bool(providers) and len(unreachable) + len(failed) >= len(providers),
+        'last_search_more': bool(more),
     }
     if candidates:
         reason = f'{len(candidates)} artwork option(s) ready.'
@@ -3213,7 +3601,8 @@ def start_web_artwork_search(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     def worker() -> None:
         try:
-            result = web_search_artwork_for_album(album_key, max_candidates=payload.get('max_candidates'), job_id=job_id)
+            result = web_search_artwork_for_album(album_key, max_candidates=payload.get('max_candidates'), job_id=job_id,
+                                                  more=web_bool(payload.get('more'), False))
             finish_job(job_id, started_mono, True, result=result)
         except Exception as exc:
             try:
@@ -4810,6 +5199,15 @@ class Handler(BaseHTTPRequestHandler):
             if route == '/api/artwork/import':
                 result = web_add_manual_candidate(payload)
                 self._send(200, result)
+                return
+            if route == '/api/artwork/import-link':
+                self._send(200, web_import_from_link(payload))
+                return
+            if route == '/api/releases/search':
+                self._send(200, web_search_releases(payload))
+                return
+            if route == '/api/releases/import':
+                self._send(200, web_import_release(payload))
                 return
             if route == '/api/artwork/approve':
                 result = start_web_approve(payload)

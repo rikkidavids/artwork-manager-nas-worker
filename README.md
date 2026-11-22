@@ -2,7 +2,7 @@
 
 NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.55**
+Current worker build: **5.56**
 Worker API: **5**
 
 ## Why This Repo Exists
@@ -17,6 +17,8 @@ Synology Container Manager can then update the worker like a normal container im
 
 Publishing is automatic: `.github/workflows/docker-image.yml` tests every change and publishes a new image whenever `main` changes. See [Updates](#updates) for how it reaches the NAS.
 
+Build 5.56 adds **Choose Release** (pick the exact edition from Deezer, Apple Music, MusicBrainz or Discogs and use its cover), importing a cover by pasting an album page link from any of those sites, **Find More** to add covers on top of the ones an album already has (covers you rejected aren't offered again), and a source search order in Settings > Artwork.
+
 Build 5.55 fixes multi-disc albums being marked Good when a later disc had no artwork, names the disc in problem files, says when artwork sources couldn't be reached, lets you approve a saved cover while that album is still searching, moves on to the next album after finishing one, adds keyboard shortcuts (F find, A approve, R reject, S skip, C convert, N next, / search), pins the actions to the bottom of the screen on phones, and warns when the access token is missing or still a placeholder.
 
 Build 5.54 adds Discogs as an artwork source. Paste a Discogs personal access token in Settings > Artwork (create one at discogs.com > Settings > Developers). The token stays on the NAS and is never sent back to the browser; you can also set it with `AMW_DISCOGS_TOKEN` in `.env`.
@@ -25,7 +27,7 @@ Build 5.54 adds Discogs as an artwork source. Paste a Discogs personal access to
 
 - **Queue:** scan the library, skip unchanged folders, filter by All / Needs Work / Review / Done, search the queue, show saved candidate counts, and keep the selected album stable while scans run.
 - **Review:** compare current artwork with a candidate, search providers, cycle candidates, approve/embed, reject poor options, skip albums, mark existing artwork good, and open Google Images or the source page when manual checking is needed.
-- **Artwork Sources:** Deezer, Apple/iTunes, and MusicBrainz/Cover Art Archive are built in because they are fast/free and need no user account. Discogs is available once a personal access token is saved. Browser image upload and direct image URLs are included, with fanart.tv and album-page URL import still good candidates for later.
+- **Artwork Sources:** Deezer, Apple/iTunes, and MusicBrainz/Cover Art Archive are built in because they are fast/free and need no user account. Discogs is available once a personal access token is saved. Covers can also be uploaded, or imported by pasting an album page link (Deezer, Apple Music, MusicBrainz, Discogs) or an image link in **Choose Release**. Sources are searched in the order set in Settings > Artwork.
 - **Library Maintenance:** repair queue states against current artwork rules, clean stale saved artwork options, run deep checks, convert/save current embedded artwork, show problem files, clear and rebuild the local database, and export diagnostics from the web UI.
 - **Safety:** keep token access, optional backups before embed, folder-cover saving, clear history, and eventually one-click restore.
 - **Clean UI Direction:** keep the queue-left/review-right workbench, avoid dashboard clutter, put counts only where they help decisions, and keep advanced tools behind settings or a simple album tools menu.
@@ -151,7 +153,7 @@ http://YOUR-NAS-IP:8765/app/
 Open the plain worker status at `http://YOUR-NAS-IP:8765/` without a browser UI check. You should see:
 
 ```text
-worker_build: "5.55"
+worker_build: "5.56"
 api: 5
 ```
 
