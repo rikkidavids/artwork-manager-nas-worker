@@ -99,6 +99,7 @@ const el = {
   candidateMeta: document.getElementById("candidateMeta"),
   candidatePosition: document.getElementById("candidatePosition"),
   candidateOptions: document.getElementById("candidateOptions"),
+  optionsPanel: document.getElementById("optionsPanel"),
   summaryLead: document.getElementById("summaryLead"),
   detailStatus: document.getElementById("detailStatus"),
   detailReason: document.getElementById("detailReason"),
@@ -1427,8 +1428,11 @@ function updateActionButtons() {
   el.findArtworkBtn.textContent = mode === "done" ? "Search Again" : Number(album?.candidate_count || 0) > 0 ? "Find More" : "Find Artwork";
   // For a cover that just needs converting, that's the main action.
   const convertFirst = canConvertCurrent && mode === "work";
-  el.findArtworkBtn.classList.toggle("primary", mode !== "done" && !convertFirst);
-  el.findArtworkBtn.classList.toggle("ghost", mode === "done" || convertFirst);
+  // When there are covers to review, approving is the main job; Find More steps back.
+  const findIsMain = mode === "work" && !convertFirst;
+  el.findArtworkBtn.classList.toggle("primary", findIsMain);
+  el.findArtworkBtn.classList.toggle("ghost", !findIsMain);
+  el.approveEmbedBtn.style.order = mode === "review" ? "-2" : "";
   el.convertCurrentBtn.classList.toggle("primary", convertFirst);
   el.convertCurrentBtn.classList.toggle("ghost", !convertFirst);
   el.convertCurrentBtn.style.order = convertFirst ? "-1" : "";
@@ -1684,6 +1688,8 @@ async function loadCover(album) {
   }
   const box = el.currentCover.closest(".cover-box");
   box.classList.remove("has-cover");
+  // Known to have no embedded cover: lets the layout shrink the empty box.
+  box.classList.toggle("no-art", Boolean(album) && (!album.width || !album.height));
   el.currentCover.removeAttribute("src");
   if (!album) {
     el.coverPlaceholder.textContent = "No artwork";
@@ -1786,6 +1792,7 @@ function renderCandidateOptions() {
   if (!el.candidateOptions) return;
   el.candidateOptions.innerHTML = "";
   el.candidatePanel.classList.toggle("has-options", Boolean(state.candidates.length));
+  el.optionsPanel.classList.toggle("hidden", state.candidates.length < 2);
   if (!state.candidates.length) {
     el.candidateOptions.classList.add("hidden");
     return;
@@ -2208,6 +2215,10 @@ function setupSourceOrder() {
     row.append(controls);
   }
   syncSourceOrderButtons();
+  document.getElementById("resetSourceOrderBtn")?.addEventListener("click", () => {
+    applySourceOrder(["deezer", "itunes", "musicbrainz", "discogs"]);
+    setSettingsDirty(true);
+  });
 }
 
 function anyDialogOpen() {
@@ -2807,6 +2818,7 @@ function bind() {
   el.settingThemeMode.addEventListener("change", () => applyTheme(el.settingThemeMode.value));
   el.settingDensity.addEventListener("change", () => applyDensity(el.settingDensity.value));
   el.closeShortcutsBtn.addEventListener("click", closeShortcuts);
+  document.getElementById("shortcutsBtn")?.addEventListener("click", openShortcuts);
   el.shortcutsOverlay.addEventListener("click", (event) => {
     if (event.target === el.shortcutsOverlay) closeShortcuts();
   });
