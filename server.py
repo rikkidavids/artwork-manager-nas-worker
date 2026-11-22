@@ -35,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.60'
-APP_BUILD = '5.60'
+WORKER_BUILD = '5.61'
+APP_BUILD = '5.61'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -45,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.60 tidies the layout: cover options get a full-width strip, Approve leads when reviewing.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.61 fixes issues found in a full end-to-end test.'
 )
 
 
@@ -1944,8 +1944,12 @@ def web_query_albums(params: Dict[str, List[str]]) -> Dict[str, Any]:
             args,
         ).fetchall()
     items = [web_album_from_row(row, settings) for row in rows]
+    # 'keep' is the album the user is working on. It stays listed after it
+    # moves to another bucket (say Needs Work -> Review once covers are found),
+    # so the screen doesn't jump to a different album mid-task.
+    keep = ((params.get('keep') or [''])[0] or '').strip()
     if bucket in {'Needs Work', 'Review', 'Done'}:
-        items = [item for item in items if item.get('bucket') == bucket]
+        items = [item for item in items if item.get('bucket') == bucket or (keep and item.get('album_key') == keep)]
     if limit:
         items = items[:limit]
     return {'ok': True, 'albums': items, 'counts': web_queue_counts(settings), 'shown': len(items)}
@@ -2137,6 +2141,16 @@ def web_list_backup_history(album_key: str = '', limit: Any = 100) -> Dict[str, 
             ''',
             args,
         ).fetchall()
+    with db_connect() as conn:
+        restore_rows = conn.execute("SELECT payload, created_at FROM history WHERE action='web_restore_backup'").fetchall()
+    restored_at: Dict[int, str] = {}
+    for restore in restore_rows:
+        try:
+            source_id = int(json.loads(restore['payload'] or '{}').get('from_history_id') or 0)
+        except Exception:
+            continue
+        if source_id:
+            restored_at[source_id] = max(restored_at.get(source_id, ''), restore['created_at'] or '')
     items = []
     for row in rows:
         payload = web_decode_history_payload(row['payload'])
@@ -2168,6 +2182,7 @@ def web_list_backup_history(album_key: str = '', limit: Any = 100) -> Dict[str, 
             'missing_backup_count': missing,
             'backup_dir': backup_dir,
             'restorable': bool(backups and missing == 0),
+            'restored_at': restored_at.get(int(row['id']), ''),
         })
     return {'ok': True, 'backups': items, 'count': len(items)}
 
@@ -2264,6 +2279,8 @@ def web_restore_backup_history(history_id: Any, job_id: str = '') -> Dict[str, A
             existing = conn.execute('SELECT notes FROM albums WHERE album_key=?', (album_key,)).fetchone()
             notes = web_decode_notes(existing['notes']) if existing else {}
             notes.update(notes_update)
+            # The embed has been undone, so there's no 'last approval' to undo any more.
+            notes.pop('last_approval', None)
             conn.execute(
                 'UPDATE albums SET status=?, width=?, height=?, example_file=COALESCE(?, example_file), notes=?, last_scanned=? WHERE album_key=?',
                 (
@@ -2577,10 +2594,18 @@ def web_add_candidate(album_key: str, candidate: Dict[str, Any]) -> int:
     with db_connect() as conn:
         if source_url:
             existing = conn.execute(
-                'SELECT id FROM candidates WHERE album_key=? AND source=? AND source_url=?',
+                'SELECT id, rejected, approved FROM candidates WHERE album_key=? AND source=? AND source_url=?',
                 (album_key, source, source_url),
             ).fetchone()
             if existing:
+                if int(existing['rejected'] or 0) or int(existing['approved'] or 0):
+                    # Searches never re-download covers you've handled (they're
+                    # skipped by URL), so getting here means you picked this
+                    # cover again yourself: bring it back as an option.
+                    conn.execute(
+                        'UPDATE candidates SET rejected=0, approved=0, image_path=?, candidate_state=?, state_reason=?, state_updated_at=? WHERE id=?',
+                        (image_path, 'available', str(candidate.get('state_reason') or 'Added again by you'), now(), existing['id']),
+                    )
                 return int(existing['id'])
         existing = conn.execute(
             'SELECT id FROM candidates WHERE album_key=? AND source=? AND image_path=?',
@@ -5724,6 +5749,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {'ok': False, 'error': 'not found', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
         except WorkerBusyError as exc:
             self._send(409, {'ok': False, 'error': str(exc), 'busy': True, 'status': status_payload(public=False)})
+        except ValueError as exc:
+            # Something the user can fix (a bad link, an album that's gone): not a server fault.
+            if job_id:
+                finish_job(job_id, started_mono, False, error=str(exc))
+            self._send(400, {'ok': False, 'error': str(exc), 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
         except Exception as exc:
             if job_id:
                 finish_job(job_id, started_mono, False, error=str(exc))

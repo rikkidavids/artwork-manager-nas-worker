@@ -458,9 +458,24 @@ function updateBatchControls() {
   el.batchSelectAllBtn.textContent = allSelected ? "Clear Shown" : "All Shown";
   el.batchMenuBtn.disabled = busy || allVisible.length === 0;
 
-  [el.batchFindBtn, el.batchConvertBtn, el.batchMarkGoodBtn, el.batchSkipBtn, el.batchIgnoreBtn, el.batchReworkBtn, el.clearSelectionBtn].forEach((button) => {
-    button.disabled = busy || selectedCount === 0;
-  });
+  // Show how many of the ticked albums each action applies to, and switch off
+  // actions that fit none of them (e.g. Rework only applies to finished albums).
+  const picked = state.albums.filter((album) => state.selectedKeys.has(album.album_key));
+  const fits = {
+    batchFindBtn: picked.filter((a) => a.bucket !== "Done").length,
+    batchConvertBtn: picked.filter((a) => ["incompatible_artwork", "not_square_artwork"].includes(a.status)).length,
+    batchMarkGoodBtn: picked.filter((a) => a.bucket !== "Done").length,
+    batchSkipBtn: picked.filter((a) => a.bucket !== "Done").length,
+    batchIgnoreBtn: picked.filter((a) => a.status !== "ignored").length,
+    batchReworkBtn: picked.filter((a) => a.bucket === "Done").length,
+  };
+  for (const [id, count] of Object.entries(fits)) {
+    const button = el[id];
+    if (!button.dataset.label) button.dataset.label = button.textContent.trim();
+    button.textContent = selectedCount && count !== selectedCount ? `${button.dataset.label} (${count})` : button.dataset.label;
+    button.disabled = busy || count === 0;
+  }
+  el.clearSelectionBtn.disabled = busy || selectedCount === 0;
   el.batchSelectAllBtn.disabled = busy || allVisible.length === 0;
   if (!state.selectionMode || busy || !allVisible.length) {
     setBatchMenuOpen(false);
@@ -635,7 +650,12 @@ function idleActionMessage(album = selectedAlbum()) {
   // Keep a dry run's result on screen until the user moves on.
   if (state.dryRunNote && state.dryRunNote.key === album.album_key) return state.dryRunNote.text;
   const mode = workflowMode(album);
-  if (mode === "done") return "Current cover is good";
+  if (mode === "done") {
+    if (album.status === "ignored") return "Ignored: rescans leave it alone. Rework brings it back into the queue.";
+    if (album.status === "reviewed_skipped") return "Skipped for now. Search Again or Rework when you want to come back to it.";
+    if (album.status === "approved") return "New cover embedded. Undo Last Embed puts the old files back.";
+    return "Current cover is good";
+  }
   const unreachable = unreachableSourceText(album);
   if (unreachable) return unreachable;
   if (mode === "review" && selectedCandidate()) return "Review this cover, then approve or reject it.";
@@ -643,6 +663,7 @@ function idleActionMessage(album = selectedAlbum()) {
     return "No more covers found. Try Choose Release, or Google Images.";
   }
   if (mode === "review") return "Search again to add cover options.";
+  if (album.status === "no_candidate") return "No covers found online. Try Choose Release with different words, paste a link, or use Google Images.";
   if (album.status === "incompatible_artwork") return "This cover only needs converting. Convert Current fixes it in one step.";
   if (album.status === "not_square_artwork") return "Convert Current pads this cover to a square, or find a better one.";
   return "Find artwork, then approve the best cover.";
@@ -831,9 +852,10 @@ function renderBackupList() {
     meta.textContent = item.missing_backup_count
       ? `${backupSubtitle(item)} - ${fmt(item.missing_backup_count)} backup file(s) missing`
       : backupSubtitle(item);
+    if (item.restored_at) meta.textContent += ` - restored ${formatDateTime(item.restored_at)}`;
     button.className = "ghost";
     button.type = "button";
-    button.textContent = "Restore";
+    button.textContent = item.restored_at ? "Restore Again" : "Restore";
     button.dataset.historyId = item.history_id;
     button.disabled = state.actionActive || !item.restorable;
     copy.append(title, meta);
@@ -1591,6 +1613,10 @@ function renderRows() {
     row.dataset.albumKey = album.album_key;
     row.classList.toggle("selected", album.album_key === state.selectedKey);
     row.classList.toggle("batch-selected", state.selectedKeys.has(album.album_key));
+    const moved = state.bucket !== "All" && album.bucket && album.bucket !== state.bucket;
+    row.classList.toggle("moved", Boolean(moved));
+    if (moved) row.title = `Now in ${album.bucket}. It stays here until you pick another album.`;
+    else row.removeAttribute("title");
     row.setAttribute("aria-selected", album.album_key === state.selectedKey ? "true" : "false");
 
     [
@@ -1634,6 +1660,11 @@ async function refreshQueue(options = {}) {
   const autoHandoff = Boolean(options.autoHandoff) && !state.query;
   const previousSelected = state.selectedKey;
   const params = new URLSearchParams({ bucket: state.bucket, q: state.query });
+  // Keep the album being worked on in the list until the user moves on,
+  // unless they just switched views themselves.
+  const viewKey = `${state.bucket}\u0000${state.query}`;
+  if (state.selectedKey && state.lastViewKey === viewKey) params.set("keep", state.selectedKey);
+  state.lastViewKey = viewKey;
   try {
     const payload = await api(`/api/albums?${params}`);
     const counts = payload.counts || {};
@@ -2008,6 +2039,7 @@ function renderSelected(options = {}) {
     el.detailChecked.textContent = "-";
     clearProblemFiles();
     el.actionMessage.textContent = "Select an album to begin";
+    state.rendered = null;
     loadCover(null);
     refreshCandidates(null);
     updateActionButtons();
@@ -2026,12 +2058,21 @@ function renderSelected(options = {}) {
   if (!jobForSelectedAlbum()) {
     el.actionMessage.textContent = idleActionMessage(album);
   }
-  state.candidates = [];
-  state.candidateIndex = 0;
-  renderCandidate();
-  loadCover(album);
+  // Background refreshes redraw the same album every couple of seconds while a
+  // job runs. Only reload what actually changed, so the options, cover and
+  // buttons don't flicker and the NAS doesn't re-check files each time.
+  const previous = state.rendered;
+  const sameAlbum = previous?.key === album.album_key;
+  const coverSig = `${album.width || ""}x${album.height || ""}|${album.last_scanned || ""}`;
+  if (!sameAlbum) {
+    state.candidates = [];
+    state.candidateIndex = 0;
+    renderCandidate();
+  }
+  if (!sameAlbum || previous.coverSig !== coverSig) loadCover(album);
   refreshCandidates(album);
-  if (!options.skipProblemFiles) loadProblemFiles(album);
+  if (!options.skipProblemFiles && (!sameAlbum || previous.status !== album.status || previous.coverSig !== coverSig)) loadProblemFiles(album);
+  state.rendered = { key: album.album_key, coverSig, status: album.status };
   updateActionButtons();
 }
 
@@ -2233,6 +2274,7 @@ function openReleaseDialog() {
   const album = selectedAlbum();
   if (!album) return;
   state.releaseAlbumKey = album.album_key;
+  setReleaseBusy(false);
   el.releaseSubtitle.textContent = `${album.artist || "Unknown artist"} - ${album.album || "Unknown album"}`;
   el.releaseArtistInput.value = album.search_artist || album.artist || "";
   el.releaseAlbumInput.value = album.search_album || album.album || "";
@@ -2354,6 +2396,7 @@ function renderReleases(rows, unreachable) {
 }
 
 async function finishReleaseImport(payload) {
+  setReleaseBusy(false); // otherwise the dialog stays locked the next time it opens
   closeReleaseDialog();
   await refreshStatus();
   await refreshQueue({ force: true });
@@ -2386,6 +2429,9 @@ async function importFromLink() {
     el.releaseLinkInput.focus();
     return;
   }
+  // A release search still running (it starts when the dialog opens) must not
+  // overwrite what happens with the link.
+  state.releaseSearchToken = (state.releaseSearchToken || 0) + 1;
   setReleaseBusy(true);
   el.releaseMessage.textContent = "Getting the cover from that link...";
   try {
@@ -2580,6 +2626,9 @@ async function undoLastEmbed() {
   try {
     const payload = await api(`/api/backups?album_key=${encodeURIComponent(album.album_key)}&limit=10`);
     const latest = (payload.backups || [])[0];
+    if (latest && latest.restored_at) {
+      throw new Error(`The last change to this album was already undone (${formatDateTime(latest.restored_at)}). Settings > Safety lists older backups.`);
+    }
     if (!latest) {
       throw new Error("There's no backup of this album's files to go back to. Turn on 'Backup files before embed' in Settings > Artwork to make future embeds undoable.");
     }
@@ -2962,7 +3011,23 @@ function bind() {
       return;
     }
     const row = event.target.closest("tr[data-album-key]");
-    if (row) selectAlbum(row.dataset.albumKey, { focusQueue: true, openDetail: isPhoneLayout() });
+    if (!row) return;
+    // In Select mode a click anywhere on the row ticks it, like most apps.
+    // Shift-click ticks every row between the last one ticked and this one.
+    if (state.selectionMode) {
+      const key = row.dataset.albumKey;
+      const keys = visibleAlbumKeys();
+      if (event.shiftKey && state.lastTickedKey && keys.includes(state.lastTickedKey)) {
+        const [a, b] = [keys.indexOf(state.lastTickedKey), keys.indexOf(key)].sort((x, y) => x - y);
+        keys.slice(a, b + 1).forEach((k) => state.selectedKeys.add(k));
+        renderRows();
+      } else {
+        toggleAlbumSelection(key, !state.selectedKeys.has(key));
+      }
+      state.lastTickedKey = key;
+      return;
+    }
+    selectAlbum(row.dataset.albumKey, { focusQueue: true, openDetail: isPhoneLayout() });
   });
   el.queueTableWrap.addEventListener("keydown", (event) => {
     if (event.key === "ArrowDown") {
@@ -3143,4 +3208,5 @@ applyTheme(localStorage.getItem("amwThemeMode") || "Auto");
 try { applyDensity(localStorage.getItem("amwDensity")); } catch (_) { applyDensity("standard"); }
 syncResponsiveState();
 bind();
+updateActionButtons(); // hide album actions until there's an album (even while locked)
 refreshStatus().then(() => refreshQueue({ force: true })).finally(() => scheduleTick());

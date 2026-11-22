@@ -326,8 +326,8 @@
                   <input id="settingPreferred" name="preferred_artwork_size" type="number" min="200" max="5000" step="50">
                 </label>
                 <label class="setting-field">
-                  <span>Max embedded size</span>
-                  <input id="settingMaxEmbed" name="max_embedded_artwork_size" type="number" min="0" max="5000" step="50">
+                  <span>Max embedded size (0 = same as Preferred size)</span>
+                  <input id="settingMaxEmbed" name="max_embedded_artwork_size" type="number" min="0" max="5000" step="50" title="Covers bigger than this are scaled down before they're embedded. 0 uses the Preferred size.">
                 </label>
               </div>
               <div class="switch-list">
