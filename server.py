@@ -35,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.56'
-APP_BUILD = '5.56'
+WORKER_BUILD = '5.57'
+APP_BUILD = '5.57'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -45,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.56 adds Choose Release, import from album page links, Find More and source order.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.57 adds Ignore, Rework, Undo Last Embed and Stop.'
 )
 
 
@@ -158,6 +158,31 @@ def begin_job(kind: str, payload: Dict[str, Any]) -> Tuple[str, float, str]:
     return job_id, started_mono, album_folder
 
 
+# Jobs that can be stopped between albums. A stop request is a flag the job
+# checks before starting its next album: work already in progress finishes,
+# so no music file is ever left half-written.
+STOPPABLE_JOB_KINDS = {'scan-library', 'batch-artwork-search', 'batch-convert-current'}
+
+
+def request_job_stop(job_id: str = '') -> Dict[str, Any]:
+    with JOB_LOCK:
+        targets = [rec for jid, rec in ACTIVE_JOBS.items()
+                   if (not job_id or jid == job_id) and rec.get('kind') in STOPPABLE_JOB_KINDS]
+        for rec in targets:
+            rec['stop_requested'] = True
+            rec['label'] = f"Stopping after the current album: {rec.get('label') or ''}".strip()
+    if job_id and not targets:
+        raise ValueError('That job has already finished or cannot be stopped.')
+    return {'ok': True, 'stopping': [rec['job_id'] for rec in targets]}
+
+
+def job_stop_requested(job_id: str) -> bool:
+    if not job_id:
+        return False
+    with JOB_LOCK:
+        return bool((ACTIVE_JOBS.get(job_id) or {}).get('stop_requested'))
+
+
 def update_job(job_id: str, **fields: Any) -> None:
     if not job_id:
         return
@@ -223,7 +248,7 @@ def finish_job(job_id: str, started_mono: float, ok: bool, result: Dict[str, Any
             for key in ('checked', 'changed', 'skipped', 'unavailable', 'removed', 'affected_albums', 'reclassified'):
                 if key in result:
                     record[key] = result.get(key)
-            for key in ('candidate_count', 'saved_candidate_ids', 'status', 'reason'):
+            for key in ('candidate_count', 'saved_candidate_ids', 'status', 'reason', 'stopped'):
                 if key in result:
                     record[key] = result.get(key)
             deep = result.get('deep_file_check') if isinstance(result.get('deep_file_check'), dict) else None
@@ -982,6 +1007,10 @@ REVIEW_STATUSES = ('candidate_found',)
 DONE_STATUSES = ('already_good', 'approved', 'reviewed_skipped', 'ignored')
 LIVE_SIZE_STATUSES = {'already_good', 'approved'}
 MANUAL_STATUS_OVERRIDE_KEY = 'manual_status_override'
+# Statuses you set yourself that checks leave alone. Ignored and Rework also
+# survive rescans of the folder; Skipped is only "for now".
+USER_HELD_STATUSES = {'reviewed_skipped', 'ignored', 'rework'}
+SCAN_PRESERVED_STATUSES = ('ignored', 'rework')
 
 
 def web_effective_artwork_target(settings: Dict[str, Any] | None = None) -> int:
@@ -1047,7 +1076,7 @@ def web_live_status(status: Any, width: Any, height: Any, settings: Dict[str, An
     manual_status = web_manual_override_status(notes or {}, settings)
     if manual_status and manual_status == status:
         return manual_status
-    if status not in {'candidate_found', 'reviewed_skipped', 'ignored', 'no_candidate', 'searching'}:
+    if status not in {'candidate_found', 'reviewed_skipped', 'ignored', 'no_candidate', 'searching', 'rework'}:
         deep_status, _deep_reason = web_deep_status_override(notes or {}, settings)
         if deep_status:
             return deep_status
@@ -1097,7 +1126,7 @@ def web_status_bucket(status: Any) -> str:
         return 'Review'
     if status in DONE_STATUSES:
         return 'Done'
-    if status in {'needs_review', 'missing_artwork', 'not_square_artwork', 'incompatible_artwork', 'no_candidate', 'pending', 'searching'}:
+    if status in {'needs_review', 'missing_artwork', 'not_square_artwork', 'incompatible_artwork', 'no_candidate', 'pending', 'searching', 'rework'}:
         return 'Needs Work'
     return 'Needs Work' if status else 'Needs Work'
 
@@ -1115,6 +1144,7 @@ def web_status_label(status: Any) -> str:
         'no_candidate': 'No Match',
         'not_square_artwork': 'Shape',
         'pending': 'Pending',
+        'rework': 'Rework',
         'reviewed_skipped': 'Skipped',
         'searching': 'Searching',
     }.get(status, status.replace('_', ' ').title() if status else 'Pending')
@@ -1212,7 +1242,7 @@ def web_upsert_album(item: Dict[str, Any]) -> str:
               artist=excluded.artist,
               album=excluded.album,
               album_path=excluded.album_path,
-              status=excluded.status,
+              status=CASE WHEN albums.status IN ('ignored', 'rework') THEN albums.status ELSE excluded.status END,
               width=excluded.width,
               height=excluded.height,
               example_file=excluded.example_file,
@@ -1450,7 +1480,7 @@ def web_recheck_album_row(row: sqlite3.Row, settings: Dict[str, Any]) -> Dict[st
     album_key = str(row['album_key'] or '')
     album_path = str(row['album_path'] or '')
     raw_status = str(row['status'] or '')
-    if raw_status in {'reviewed_skipped', 'ignored'}:
+    if raw_status in USER_HELD_STATUSES:
         return {'album_key': album_key, 'skipped': True, 'reason': 'User-handled album left alone.'}
     folder = safe_path(album_path)
     if not folder.is_dir():
@@ -1722,7 +1752,7 @@ def web_persist_album_deep_check(row: sqlite3.Row, settings: Dict[str, Any], dee
     if not album_key:
         return None
     raw_status = str(row['status'] or '')
-    if raw_status in {'reviewed_skipped', 'ignored', 'searching'}:
+    if raw_status in USER_HELD_STATUSES | {'searching'}:
         return web_get_album(album_key)
     deep = deep_result.get('deep_file_check') if isinstance(deep_result, dict) else {}
     if not isinstance(deep, dict):
@@ -3895,6 +3925,62 @@ def web_album_simple_action(album_key: str, status: str, reason: str, action: st
     return {'ok': True, 'album': web_get_album(album_key)}
 
 
+def web_delete_album_candidates(album_key: str, include_rejected: bool) -> int:
+    """Remove an album's saved options and their downloaded files."""
+    cands = web_list_candidates(album_key, include_rejected=include_rejected)
+    for cand in cands:
+        web_cleanup_candidate_file(cand)
+    with db_connect() as conn:
+        if include_rejected:
+            conn.execute('DELETE FROM candidates WHERE album_key=?', (album_key,))
+        else:
+            conn.execute('DELETE FROM candidates WHERE album_key=? AND COALESCE(rejected, 0)=0', (album_key,))
+    return len(cands)
+
+
+def web_ignore_album(album_key: str) -> Dict[str, Any]:
+    """Take an album out of the workflow for good (compilations, audiobooks...)."""
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    removed = web_delete_album_candidates(album_key, include_rejected=False)
+    web_set_album_status(album_key, 'ignored', 'Ignored by you. Rework the album to bring it back.', {'ignored_at': now()})
+    web_add_history(album_key, 'web_ignore_album', {'removed_options': removed})
+    return {'ok': True, 'removed_options': removed, 'album': web_get_album(album_key)}
+
+
+def web_rework_album(album_key: str) -> Dict[str, Any]:
+    """Send an album back to Needs Work for a new cover. Music files aren't touched."""
+    album = web_get_album(album_key)
+    if not album:
+        raise ValueError('Album not found')
+    # Rejected covers are cleared too, so a fresh search can offer them again.
+    removed = web_delete_album_candidates(album_key, include_rejected=True)
+    with db_connect() as conn:
+        row = conn.execute('SELECT notes FROM albums WHERE album_key=?', (album_key,)).fetchone()
+        notes = web_decode_notes(row['notes'] if row else '')
+        notes.pop(MANUAL_STATUS_OVERRIDE_KEY, None)
+        notes.pop('ignored_at', None)
+        conn.execute('UPDATE albums SET notes=? WHERE album_key=?', (json.dumps(notes), album_key))
+    web_set_album_status(album_key, 'rework', 'Sent back to find a new cover.', {'reworked_at': now()})
+    web_add_history(album_key, 'web_rework_album', {'removed_options': removed, 'previous_status': album.get('status')})
+    return {'ok': True, 'removed_options': removed, 'album': web_get_album(album_key)}
+
+
+def web_batch_album_action(payload: Dict[str, Any], action) -> Dict[str, Any]:
+    album_keys = web_payload_album_keys(payload)
+    web_block_if_busy('batch album action')
+    updated = 0
+    failed: List[Dict[str, str]] = []
+    for album_key in album_keys:
+        try:
+            action(album_key)
+            updated += 1
+        except Exception as exc:
+            failed.append({'album_key': album_key, 'error': str(exc)})
+    return {'ok': not failed, 'total': len(album_keys), 'updated': updated, 'failed': failed, 'counts': web_queue_counts()}
+
+
 def web_payload_album_keys(payload: Dict[str, Any], max_items: int = 50000) -> List[str]:
     raw = payload.get('album_keys') or payload.get('albums') or []
     if isinstance(raw, str):
@@ -3958,6 +4044,8 @@ def start_web_batch_artwork_search(payload: Dict[str, Any]) -> Dict[str, Any]:
         failed: List[Dict[str, str]] = []
         try:
             for index, album in enumerate(albums, 1):
+                if job_stop_requested(job_id):
+                    break
                 update_job(job_id, label=web_batch_label('Searching', album, index, total), checked=checked, total=total)
                 try:
                     result = web_search_artwork_for_album(str(album.get('album_key') or ''), max_candidates=max_candidates, job_id=job_id)
@@ -3975,6 +4063,7 @@ def start_web_batch_artwork_search(payload: Dict[str, Any]) -> Dict[str, Any]:
                 'checked': checked,
                 'changed': changed,
                 'failed': failed,
+                'stopped': checked < total,
                 'candidate_count': saved_total,
                 'missing_album_keys': missing,
             })
@@ -4010,6 +4099,8 @@ def start_web_batch_convert_current(payload: Dict[str, Any]) -> Dict[str, Any]:
         failed: List[Dict[str, str]] = []
         try:
             for index, album in enumerate(albums, 1):
+                if job_stop_requested(job_id):
+                    break
                 update_job(job_id, label=web_batch_label('Converting', album, index, total), checked=checked, total=total)
                 try:
                     result = web_convert_current_artwork(str(album.get('album_key') or ''), job_id=job_id)
@@ -4024,6 +4115,7 @@ def start_web_batch_convert_current(payload: Dict[str, Any]) -> Dict[str, Any]:
                 'checked': checked,
                 'changed': changed,
                 'failed': failed,
+                'stopped': checked < total,
                 'missing_album_keys': missing,
             })
         except Exception as exc:
@@ -4832,9 +4924,15 @@ def scan_library_job(payload: Dict[str, Any], job_id: str = '') -> Dict[str, Any
             publish_progress('scanning', force=True)
 
     pending = set()
+    stopped = False
     publish_progress('starting', force=True)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for root_text, dirs, files in os.walk(library_root):
+            if job_stop_requested(job_id):
+                # Albums already being checked finish and are saved; the next
+                # scan skips them and carries on from here.
+                stopped = True
+                break
             dirs[:] = sort_names(dirs)
             files = sort_names(files)
             music = [name for name in files if str(name).lower().endswith(MUSIC_EXTENSIONS)]
@@ -4906,6 +5004,7 @@ def scan_library_job(payload: Dict[str, Any], job_id: str = '') -> Dict[str, Any
         'queued_albums': queued,
         'skipped_unchanged': skipped,
         'fingerprints_backfilled': backfilled,
+        'stopped': stopped,
         'albums': albums,
         'fingerprint_updates': fingerprint_updates,
         'worker_build': WORKER_BUILD,
@@ -5250,6 +5349,21 @@ class Handler(BaseHTTPRequestHandler):
                 album_key = str(payload.get('album_key') or '').strip()
                 result = web_album_simple_action(album_key, 'reviewed_skipped', 'Skipped for now.', 'web_skip_album')
                 self._send(200, result)
+                return
+            if route == '/api/jobs/stop':
+                self._send(200, request_job_stop(str(payload.get('job_id') or '').strip()))
+                return
+            if route == '/api/album/ignore':
+                self._send(200, web_ignore_album(str(payload.get('album_key') or '').strip()))
+                return
+            if route == '/api/album/rework':
+                self._send(200, web_rework_album(str(payload.get('album_key') or '').strip()))
+                return
+            if route == '/api/batch/ignore':
+                self._send(200, web_batch_album_action(payload, web_ignore_album))
+                return
+            if route == '/api/batch/rework':
+                self._send(200, web_batch_album_action(payload, web_rework_album))
                 return
             if route == '/api/album/mark-good':
                 album_key = str(payload.get('album_key') or '').strip()

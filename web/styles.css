@@ -2551,3 +2551,14 @@ tbody tr.batch-selected:not(.selected) {
   min-width: 32px;
   padding: 2px 8px;
 }
+
+/* Stop button inside the scan / batch progress pill */
+.scan-panel .stop-job-btn {
+  flex: 0 0 auto;
+  height: 26px;
+  min-height: 26px;
+  margin-right: -6px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13px;
+}

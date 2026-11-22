@@ -61,6 +61,12 @@ const el = {
   batchConvertBtn: document.getElementById("batchConvertBtn"),
   batchMarkGoodBtn: document.getElementById("batchMarkGoodBtn"),
   batchSkipBtn: document.getElementById("batchSkipBtn"),
+  batchIgnoreBtn: document.getElementById("batchIgnoreBtn"),
+  batchReworkBtn: document.getElementById("batchReworkBtn"),
+  stopJobBtn: document.getElementById("stopJobBtn"),
+  undoEmbedBtn: document.getElementById("undoEmbedBtn"),
+  reworkAlbumBtn: document.getElementById("reworkAlbumBtn"),
+  ignoreAlbumBtn: document.getElementById("ignoreAlbumBtn"),
   clearSelectionBtn: document.getElementById("clearSelectionBtn"),
   searchInput: document.getElementById("searchInput"),
   clearSearchBtn: document.getElementById("clearSearchBtn"),
@@ -413,7 +419,7 @@ function updateBatchControls() {
   el.batchSelectAllBtn.textContent = allSelected ? "Clear Shown" : "All Shown";
   el.batchMenuBtn.disabled = busy || allVisible.length === 0;
 
-  [el.batchFindBtn, el.batchConvertBtn, el.batchMarkGoodBtn, el.batchSkipBtn, el.clearSelectionBtn].forEach((button) => {
+  [el.batchFindBtn, el.batchConvertBtn, el.batchMarkGoodBtn, el.batchSkipBtn, el.batchIgnoreBtn, el.batchReworkBtn, el.clearSelectionBtn].forEach((button) => {
     button.disabled = busy || selectedCount === 0;
   });
   el.batchSelectAllBtn.disabled = busy || allVisible.length === 0;
@@ -1118,6 +1124,8 @@ function activeReviewJob(status) {
     "repair-queue",
     "embed",
     "deep-check",
+    "batch-artwork-search",
+    "batch-convert-current",
   ]);
   return jobs.find((job) => job && kinds.has(job.kind));
 }
@@ -1194,7 +1202,7 @@ function albumJobState(album = selectedAlbum()) {
   if (state.actionActive && !jobs.length) busy = true;
   for (const job of jobs) {
     if (!job) continue;
-    if (!job.album_key) {
+    if (!job.album_key || String(job.kind || "").startsWith("batch-")) {
       busy = true; // queue-wide work such as batch actions or repairs
     } else if (job.album_key === key) {
       if (job.kind === "artwork-search") searching = true;
@@ -1277,6 +1285,14 @@ function updateActionButtons() {
   el.googleImagesBtn.disabled = !album;
   el.markGoodBtn.disabled = !album || busyOrSearching;
   el.skipAlbumBtn.disabled = !album || busyOrSearching;
+  // Ignore for anything still in play; Rework brings finished or ignored albums back;
+  // Undo for albums whose files were changed by an embed or conversion.
+  setVisible(el.ignoreAlbumBtn, Boolean(album) && album.status !== "ignored");
+  el.ignoreAlbumBtn.disabled = !album || busyOrSearching;
+  setVisible(el.reworkAlbumBtn, Boolean(album) && mode === "done");
+  el.reworkAlbumBtn.disabled = !album || busyOrSearching;
+  setVisible(el.undoEmbedBtn, Boolean(album && (album.status === "approved" || album.notes?.last_approval)));
+  el.undoEmbedBtn.disabled = !album || busyOrSearching;
   updateBatchControls();
 }
 
@@ -1323,6 +1339,10 @@ function renderTokenWarning(text) {
   el.tokenWarning.classList.toggle("hidden", !text || hidden);
 }
 
+function countsKey(counts) {
+  return ["All", "Needs Work", "Review", "Done"].map((key) => Number((counts || {})[key] || 0)).join("/");
+}
+
 async function refreshStatus() {
   try {
     const status = await api("/api/app/status");
@@ -1343,9 +1363,11 @@ async function refreshStatus() {
       }
     }
     setCounts(counts);
+    state.statusCountsKey = countsKey(counts);
     renderTokenWarning(app.token_warning || "");
     renderScan(status);
     renderReviewJob(status);
+    renderStopButton();
     el.workerSummary.textContent = `Build ${status.worker_build || "-"} - ${shortPath((app.music_roots || [])[0] || "/music")}`;
     return status;
   } catch (error) {
@@ -1424,6 +1446,7 @@ async function refreshQueue(options = {}) {
   try {
     const payload = await api(`/api/albums?${params}`);
     const counts = payload.counts || {};
+    state.queueCountsKey = countsKey(counts);
     const albums = payload.albums || [];
     if (autoHandoff && !albums.length && state.bucket === "Review" && Number(counts["Needs Work"] || 0) > 0) {
       state.bucket = "Needs Work";
@@ -2247,6 +2270,104 @@ async function runAlbumAction(path, message, options = {}) {
   }
 }
 
+function albumName(album) {
+  return `${album.artist || "Unknown artist"} - ${album.album || "Unknown album"}`;
+}
+
+async function ignoreAlbum() {
+  const album = selectedAlbum();
+  if (!album) return;
+  if (!window.confirm(`Ignore ${albumName(album)}?\n\nIt leaves the queue for good, and rescans won't bring it back. You can find it under Done and use Rework to bring it back.`)) return;
+  await runAlbumAction("/api/album/ignore", "Ignored. It's under Done if you change your mind.", { start: "Ignoring album" });
+}
+
+async function reworkAlbum() {
+  const album = selectedAlbum();
+  if (!album) return;
+  if (!window.confirm(`Send ${albumName(album)} back to Needs Work for a new cover?\n\nIts saved cover options are cleared. Your music files aren't changed.`)) return;
+  state.actionActive = true;
+  el.actionMessage.textContent = "Sending the album back to Needs Work";
+  updateActionButtons();
+  try {
+    await api("/api/album/rework", { method: "POST", body: JSON.stringify({ album_key: album.album_key }) });
+    // Follow the album to Needs Work and keep it selected, ready for a new cover.
+    state.bucket = "Needs Work";
+    state.preferredNextKey = "";
+    state.advanceAfterKey = "";
+    localStorage.setItem("amwBucket", state.bucket);
+    state.selectedKey = album.album_key;
+    state.actionActive = false;
+    await refreshQueue({ force: true });
+    await refreshCandidates(selectedAlbum());
+    el.actionMessage.textContent = "Back in Needs Work. Use Find Artwork or Choose Release to pick a new cover.";
+  } catch (error) {
+    state.actionActive = false;
+    el.actionMessage.textContent = error.message || "The album could not be reworked.";
+  } finally {
+    updateActionButtons();
+  }
+}
+
+async function undoLastEmbed() {
+  const album = selectedAlbum();
+  if (!album) return;
+  state.actionActive = true;
+  el.actionMessage.textContent = "Looking for this album's last backup";
+  updateActionButtons();
+  try {
+    const payload = await api(`/api/backups?album_key=${encodeURIComponent(album.album_key)}&limit=10`);
+    const latest = (payload.backups || [])[0];
+    if (!latest) {
+      throw new Error("There's no backup of this album's files to go back to. Turn on 'Backup files before embed' in Settings > Artwork to make future embeds undoable.");
+    }
+    if (!latest.restorable) {
+      throw new Error("The latest backup of this album is incomplete (some backup files are missing), so it can't be undone here. See Settings > Safety.");
+    }
+    const when = formatDateTime(latest.created_at);
+    state.actionActive = false;
+    if (!window.confirm(`Undo the last change to ${albumName(album)}?\n\n${latest.action_label} on ${when}. The music files go back to how they were before it. The current files are backed up first, so this can be undone too.`)) {
+      el.actionMessage.textContent = idleActionMessage(album);
+      updateActionButtons();
+      return;
+    }
+    state.actionActive = true;
+    el.actionMessage.textContent = "Putting the previous files back";
+    await api("/api/backup/restore", { method: "POST", body: JSON.stringify({ history_id: latest.history_id }) });
+    await refreshStatus();
+    scheduleTick(500);
+  } catch (error) {
+    state.actionActive = false;
+    el.actionMessage.textContent = error.message || "The last embed could not be undone.";
+    updateActionButtons();
+  }
+}
+
+function stoppableJobs() {
+  const kinds = new Set(["scan-library", "batch-artwork-search", "batch-convert-current"]);
+  return (state.activeJobs || []).filter((job) => job && kinds.has(job.kind));
+}
+
+function renderStopButton() {
+  const jobs = stoppableJobs();
+  setVisible(el.stopJobBtn, jobs.length > 0);
+  const stopping = jobs.length > 0 && jobs.every((job) => job.stop_requested);
+  el.stopJobBtn.disabled = stopping;
+  el.stopJobBtn.textContent = stopping ? "Stopping..." : "Stop";
+  el.stopJobBtn.title = stopping ? "Finishing the current album, then stopping" : "Stop after the current album";
+}
+
+async function stopRunningJob() {
+  el.stopJobBtn.disabled = true;
+  el.stopJobBtn.textContent = "Stopping...";
+  try {
+    await api("/api/jobs/stop", { method: "POST", body: JSON.stringify({}) });
+    await refreshStatus();
+  } catch (error) {
+    el.actionMessage.textContent = error.message || "Could not stop.";
+    renderStopButton();
+  }
+}
+
 async function runBatchAction(path, message, options = {}) {
   const albumKeys = batchSelectedKeys();
   const count = albumKeys.length;
@@ -2491,6 +2612,18 @@ function bind() {
   });
   el.moreActionsBtn.addEventListener("click", () => setMoreActionsOpen(!el.actionsPanel.classList.contains("show-more")));
   el.markGoodBtn.addEventListener("click", () => runAlbumAction("/api/album/mark-good", "Marked as good"));
+  el.ignoreAlbumBtn.addEventListener("click", ignoreAlbum);
+  el.reworkAlbumBtn.addEventListener("click", reworkAlbum);
+  el.undoEmbedBtn.addEventListener("click", undoLastEmbed);
+  el.stopJobBtn.addEventListener("click", stopRunningJob);
+  el.batchIgnoreBtn.addEventListener("click", () => runBatchAction("/api/batch/ignore", "Ignored selected albums", {
+    confirmText: (count) => `Ignore ${fmt(count)} selected album${count === 1 ? "" : "s"}? They leave the queue for good; use Rework to bring any back.`,
+    done: "Ignored selected albums. They're under Done.",
+  }));
+  el.batchReworkBtn.addEventListener("click", () => runBatchAction("/api/batch/rework", "Sent selected albums back to Needs Work", {
+    confirmText: (count) => `Send ${fmt(count)} selected album${count === 1 ? "" : "s"} back to Needs Work for new covers? Their saved options are cleared; music files aren't changed.`,
+    done: "Sent selected albums back to Needs Work.",
+  }));
   el.skipAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/skip", "Skipped for now"));
   el.selectModeBtn.addEventListener("click", () => setSelectionMode(!state.selectionMode));
   el.batchMenuBtn.addEventListener("click", (event) => {
@@ -2697,7 +2830,11 @@ async function tick() {
   const hadAction = state.actionActive;
   try {
     const status = await refreshStatus();
-    if (status && (state.scanActive || state.actionActive || hadAction)) {
+    // Reload the list when the server's album counts no longer match it: a quick
+    // scan can start and finish between two polls, and changes made from another
+    // browser show up too.
+    const countsChanged = Boolean(status) && state.statusCountsKey !== state.queueCountsKey;
+    if (status && (state.scanActive || state.actionActive || hadAction || countsChanged)) {
       const actionFinished = hadAction && !state.actionActive;
       if (actionFinished) renderFinishedAction(status);
       await refreshQueue({ autoHandoff: actionFinished });

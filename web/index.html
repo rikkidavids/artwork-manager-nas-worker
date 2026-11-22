@@ -31,6 +31,7 @@
           <div class="scan-track" aria-hidden="true">
             <div id="scanBar" class="scan-bar"></div>
           </div>
+          <button id="stopJobBtn" class="ghost danger-text stop-job-btn hidden" type="button">Stop</button>
         </div>
         <div class="top-actions">
           <button id="refreshBtn" class="ghost" type="button">Refresh</button>
@@ -72,6 +73,8 @@
                   <button id="batchConvertBtn" class="ghost" type="button" role="menuitem">Convert</button>
                   <button id="batchMarkGoodBtn" class="ghost" type="button" role="menuitem">Mark Good</button>
                   <button id="batchSkipBtn" class="ghost" type="button" role="menuitem">Skip</button>
+                  <button id="batchIgnoreBtn" class="ghost" type="button" role="menuitem">Ignore</button>
+                  <button id="batchReworkBtn" class="ghost" type="button" role="menuitem">Rework</button>
                   <button id="clearSelectionBtn" class="ghost" type="button" role="menuitem">Clear</button>
                 </div>
               </div>
@@ -186,6 +189,9 @@
                 <button id="copyFolderBtn" class="ghost" type="button">Copy Path</button>
                 <button id="openSourceBtn" class="ghost" type="button">Open Source</button>
                 <button id="googleImagesBtn" class="ghost" type="button">Google Images</button>
+                <button id="undoEmbedBtn" class="ghost hidden" type="button" title="Put the music files back how they were before the last embed">Undo Last Embed</button>
+                <button id="reworkAlbumBtn" class="ghost hidden" type="button" title="Send this album back to Needs Work for a new cover">Rework</button>
+                <button id="ignoreAlbumBtn" class="ghost" type="button" title="Take this album out of the queue for good">Ignore</button>
                 <button id="markGoodBtn" class="ghost" type="button">Mark Good</button>
                 <button id="skipAlbumBtn" title="Skip (S)" aria-keyshortcuts="S" class="ghost" type="button">Skip</button>
               </div>
