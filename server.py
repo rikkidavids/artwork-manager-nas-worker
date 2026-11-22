@@ -35,8 +35,8 @@ from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-WORKER_BUILD = '5.57'
-APP_BUILD = '5.57'
+WORKER_BUILD = '5.58'
+APP_BUILD = '5.58'
 WORKER_API = 5
 MINIMUM_MAC_APP_WORKER_API = 4
 VERSION = f'Artwork Manager NAS Worker {WORKER_BUILD} / app build {APP_BUILD}'
@@ -45,7 +45,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 YEAR_RE = re.compile(r'(19|20)\d{2}')
 UPDATE_HINT = (
     'If this is not the build you expected, Synology is probably still running '
-    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.57 adds Ignore, Rework, Undo Last Embed and Stop.'
+    'an older cached Docker image/container. Pull the latest GHCR image and recreate the container. Build 5.58 gives the review screen room to breathe: thumbnail options, pinned actions.'
 )
 
 
@@ -2237,6 +2237,39 @@ def web_candidate_artwork(candidate_id: Any) -> Tuple[bytes, str]:
     if mime not in {'image/jpeg', 'image/png', 'image/webp'}:
         mime = 'image/jpeg'
     return path.read_bytes(), mime
+
+
+THUMB_CACHE: Dict[Tuple[str, int, float], bytes] = {}
+THUMB_CACHE_LOCK = threading.Lock()
+
+
+def web_candidate_thumbnail(candidate_id: Any, size: Any) -> Tuple[bytes, str]:
+    """A small JPEG of a cover option for the options grid (cached in memory)."""
+    try:
+        px = max(48, min(int(size), 400))
+    except (TypeError, ValueError):
+        px = 160
+    candidate = web_get_candidate(candidate_id)
+    if not candidate:
+        raise FileNotFoundError('candidate not found')
+    path = web_data_path(candidate.get('image_path'))
+    if not path.is_file():
+        raise FileNotFoundError('candidate artwork file is missing')
+    key = (str(path), px, path.stat().st_mtime)
+    with THUMB_CACHE_LOCK:
+        cached = THUMB_CACHE.get(key)
+    if cached is None:
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im).convert('RGB')
+            im.thumbnail((px, px), Image.LANCZOS)
+            buf = BytesIO()
+            im.save(buf, 'JPEG', quality=82)
+            cached = buf.getvalue()
+        with THUMB_CACHE_LOCK:
+            if len(THUMB_CACHE) > 600:
+                THUMB_CACHE.clear()
+            THUMB_CACHE[key] = cached
+    return cached, 'image/jpeg'
 
 
 def web_mark_candidate(candidate_id: Any, approved: bool | None = None, rejected: bool | None = None, state_reason: str = '') -> None:
@@ -5249,8 +5282,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(401, {'ok': False, 'error': 'unauthorized', 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
                 return
             candidate_id = (params.get('candidate_id') or [''])[0]
+            thumb = (params.get('thumb') or [''])[0]
             try:
-                data, mime = web_candidate_artwork(candidate_id)
+                data, mime = web_candidate_thumbnail(candidate_id, thumb) if thumb else web_candidate_artwork(candidate_id)
             except Exception as exc:
                 self._send(404, {'ok': False, 'error': str(exc), 'worker_build': WORKER_BUILD, 'api': WORKER_API, 'worker_api': WORKER_API})
                 return

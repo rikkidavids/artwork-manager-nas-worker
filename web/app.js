@@ -1614,18 +1614,55 @@ function renderCandidateOptions() {
     option.title = candidateLabel(candidate);
     option.classList.toggle("active", index === state.candidateIndex);
 
+    option.setAttribute("aria-label", `Option ${index + 1}: ${candidateLabel(candidate)}`);
+
+    // A thumbnail, so options can be compared at a glance, with size and score under it.
+    const thumb = document.createElement("span");
+    thumb.className = "candidate-option-thumb";
+    const img = document.createElement("img");
+    img.alt = "";
+    img.decoding = "async";
+    thumb.append(img);
+    loadCandidateThumb(candidate, img);
+
     const main = document.createElement("span");
     main.className = "candidate-option-main";
-    main.textContent = candidateOptionMain(candidate, index);
+    const width = Number(candidate.width || 0);
+    main.textContent = width ? `${width}px` : `Option ${index + 1}`;
 
     const sub = document.createElement("span");
     sub.className = "candidate-option-sub";
-    sub.textContent = candidateOptionSub(candidate);
+    const warnings = candidateWarnings(candidate);
+    sub.textContent = [candidate.source, (candidate.score || candidate.score === 0) ? `${candidate.score}` : ""].filter(Boolean).join(" \u00b7 ");
+    if (warnings.length) option.classList.add("has-warning");
 
-    option.append(main, sub);
+    option.append(thumb, main, sub);
     el.candidateOptions.appendChild(option);
   });
   scrollActiveCandidateOptionIntoView();
+}
+
+// Thumbnails are fetched with the access token, then kept for the session.
+const candidateThumbUrls = new Map();
+
+async function loadCandidateThumb(candidate, img) {
+  const id = String(candidate?.candidate_id || "");
+  if (!id) return;
+  const cached = candidateThumbUrls.get(id);
+  if (cached) {
+    img.src = await cached;
+    return;
+  }
+  const pending = fetch(`/api/artwork/candidate?candidate_id=${encodeURIComponent(id)}&thumb=192`, { headers: headers() })
+    .then((response) => (response.ok ? response.blob() : Promise.reject(new Error("thumb"))))
+    .then((blob) => URL.createObjectURL(blob));
+  candidateThumbUrls.set(id, pending);
+  try {
+    img.src = await pending;
+  } catch (_error) {
+    candidateThumbUrls.delete(id);
+    img.closest(".candidate-option-thumb")?.classList.add("missing");
+  }
 }
 
 function scrollActiveCandidateOptionIntoView() {
