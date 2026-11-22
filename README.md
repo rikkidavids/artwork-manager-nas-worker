@@ -2,7 +2,7 @@
 
 NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.60**
+Current worker build: **5.61**
 Worker API: **5**
 
 ## Why This Repo Exists
@@ -16,6 +16,18 @@ ghcr.io/rikkidavids/artwork-manager-nas-worker:latest
 Synology Container Manager can then update the worker like a normal container image. GitHub builds the image; the NAS only pulls and restarts it.
 
 Publishing is automatic: `.github/workflows/docker-image.yml` tests every change and publishes a new image whenever `main` changes. See [Updates](#updates) for how it reaches the NAS.
+
+Build 5.61 fixes what a full end-to-end test turned up:
+
+- The album you're working on stays selected when it moves to another view. Before, searching an album in Needs Work jumped you to a different album as soon as its covers arrived.
+- No more flicker while jobs run: background refreshes no longer clear the options, reload the cover, or re-check the files on the NAS every couple of seconds.
+- Choose Release no longer stays greyed out after an import, and a link error is no longer hidden by the release search.
+- Choosing a release or link whose cover you'd rejected before now brings that cover back, instead of leaving the album in Review with nothing to review.
+- Undo Last Embed hides once the embed is undone. Settings > Safety marks restored backups.
+- In Select mode, clicking a row ticks it (Shift-click ticks a range). The Actions menu shows how many ticked albums each action applies to.
+- Clearer messages for ignored, skipped and no-results albums. Album buttons stay hidden until there's an album.
+- The Settings window keeps one size between tabs. On phones, the gap under the cover options is gone.
+- Mistakes like a bad link now return a normal "400" error instead of a server error.
 
 Build 5.60 is a layout pass on the review screen:
 
@@ -174,7 +186,7 @@ http://YOUR-NAS-IP:8765/app/
 Open the plain worker status at `http://YOUR-NAS-IP:8765/` without a browser UI check. You should see:
 
 ```text
-worker_build: "5.60"
+worker_build: "5.61"
 api: 5
 ```
 

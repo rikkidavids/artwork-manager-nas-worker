@@ -2931,3 +2931,20 @@ kbd {
 
 .header-shortcuts { width: 34px; padding: 0; }
 @media (max-width: 740px) { .header-shortcuts { display: none; } }
+
+/* An album that has moved to another view stays listed while you work on it. */
+#albumRows tr.moved td { opacity: 0.72; font-style: italic; }
+#albumRows tr.moved.selected td { opacity: 1; }
+
+/* Select mode: the tick box shares the Status column, so give it room. */
+.queue-pane.selecting .status-col { width: 108px; }
+.queue-pane.selecting #albumRows tr { cursor: pointer; user-select: none; }
+
+/* Settings keeps one size while you switch tabs instead of jumping around. */
+@media (min-width: 741px) {
+  .settings-window { height: min(820px, calc(100vh - 56px)); }
+}
+
+/* The options strip is only as tall as its thumbnails (it was inheriting the
+   cover panels' minimum height, leaving a big gap on phones). */
+#optionsPanel { min-height: 0; }
