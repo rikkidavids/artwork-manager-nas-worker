@@ -180,6 +180,7 @@
               </div>
               <button id="moreActionsBtn" class="ghost more-actions-btn" type="button" aria-expanded="false" aria-controls="quietActionRow">More actions</button>
               <div id="quietActionRow" class="action-row quiet-actions">
+                <button id="chooseReleaseBtn" class="ghost" type="button" title="Pick the exact release, or paste a link">Choose Release</button>
                 <button id="importImageBtn" class="ghost" type="button">Import Image</button>
                 <button id="recheckAlbumBtn" class="ghost" type="button">Recheck</button>
                 <button id="copyFolderBtn" class="ghost" type="button">Copy Path</button>
@@ -318,10 +319,13 @@
             <div class="setting-card">
               <h3>Artwork Search</h3>
               <div class="switch-list">
-                <label><input id="settingDeezerEnabled" name="deezer_enabled" type="checkbox"> Search Deezer</label>
-                <label><input id="settingItunesEnabled" name="itunes_enabled" type="checkbox"> Search Apple/iTunes</label>
-                <label><input id="settingMusicbrainzEnabled" name="musicbrainz_enabled" type="checkbox"> Search MusicBrainz</label>
-                <label><input id="settingDiscogsEnabled" name="discogs_enabled" type="checkbox"> Search Discogs (needs a token)</label>
+                <ol id="sourceOrderList" class="source-order" aria-label="Artwork sources, searched from top to bottom">
+                  <li data-source="deezer"><label><input id="settingDeezerEnabled" name="deezer_enabled" type="checkbox"> Search Deezer</label></li>
+                  <li data-source="itunes"><label><input id="settingItunesEnabled" name="itunes_enabled" type="checkbox"> Search Apple/iTunes</label></li>
+                  <li data-source="musicbrainz"><label><input id="settingMusicbrainzEnabled" name="musicbrainz_enabled" type="checkbox"> Search MusicBrainz</label></li>
+                  <li data-source="discogs"><label><input id="settingDiscogsEnabled" name="discogs_enabled" type="checkbox"> Search Discogs (needs a token)</label></li>
+                </ol>
+                <p class="setting-note">Sources are searched from top to bottom, and their covers are listed in that order. Use the arrows to change it.</p>
               </div>
               <div class="setting-grid">
                 <label class="setting-field">
@@ -401,6 +405,35 @@
             </div>
           </section>
         </form>
+      </section>
+    </div>
+
+    <div id="releaseOverlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="releaseTitle">
+      <section class="release-window">
+        <header class="release-head">
+          <div>
+            <h2 id="releaseTitle">Choose Release</h2>
+            <p id="releaseSubtitle"></p>
+          </div>
+          <button id="closeReleaseBtn" class="ghost" type="button">Close</button>
+        </header>
+        <form id="releaseLinkForm" class="release-form" autocomplete="off">
+          <label for="releaseLinkInput">Paste a link</label>
+          <div class="release-row">
+            <input id="releaseLinkInput" type="text" inputmode="url" spellcheck="false" placeholder="Album page on Deezer, Apple Music, MusicBrainz or Discogs, or an image link">
+            <button id="releaseLinkBtn" class="primary" type="submit">Import</button>
+          </div>
+        </form>
+        <form id="releaseSearchForm" class="release-form" autocomplete="off">
+          <label for="releaseArtistInput">Or search for the release</label>
+          <div class="release-row">
+            <input id="releaseArtistInput" type="text" placeholder="Artist" aria-label="Artist">
+            <input id="releaseAlbumInput" type="text" placeholder="Album" aria-label="Album">
+            <button id="releaseSearchBtn" class="ghost" type="submit">Search</button>
+          </div>
+        </form>
+        <p id="releaseMessage" class="release-message" role="status"></p>
+        <ul id="releaseList" class="release-list"></ul>
       </section>
     </div>
 

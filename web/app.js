@@ -95,6 +95,19 @@ const el = {
   candidateActionRow: document.getElementById("candidateActionRow"),
   quietActionRow: document.getElementById("quietActionRow"),
   importImageInput: document.getElementById("importImageInput"),
+  chooseReleaseBtn: document.getElementById("chooseReleaseBtn"),
+  releaseOverlay: document.getElementById("releaseOverlay"),
+  releaseSubtitle: document.getElementById("releaseSubtitle"),
+  closeReleaseBtn: document.getElementById("closeReleaseBtn"),
+  releaseLinkForm: document.getElementById("releaseLinkForm"),
+  releaseLinkInput: document.getElementById("releaseLinkInput"),
+  releaseLinkBtn: document.getElementById("releaseLinkBtn"),
+  releaseSearchForm: document.getElementById("releaseSearchForm"),
+  releaseArtistInput: document.getElementById("releaseArtistInput"),
+  releaseAlbumInput: document.getElementById("releaseAlbumInput"),
+  releaseSearchBtn: document.getElementById("releaseSearchBtn"),
+  releaseMessage: document.getElementById("releaseMessage"),
+  releaseList: document.getElementById("releaseList"),
   findArtworkBtn: document.getElementById("findArtworkBtn"),
   approveEmbedBtn: document.getElementById("approveEmbedBtn"),
   convertCurrentBtn: document.getElementById("convertCurrentBtn"),
@@ -132,6 +145,7 @@ const el = {
   settingSaveFolder: document.getElementById("settingSaveFolder"),
   settingBackupEmbed: document.getElementById("settingBackupEmbed"),
   settingDeezerEnabled: document.getElementById("settingDeezerEnabled"),
+  sourceOrderList: document.getElementById("sourceOrderList"),
   settingItunesEnabled: document.getElementById("settingItunesEnabled"),
   settingMusicbrainzEnabled: document.getElementById("settingMusicbrainzEnabled"),
   settingDiscogsEnabled: document.getElementById("settingDiscogsEnabled"),
@@ -260,7 +274,7 @@ function applyTheme(mode) {
 function syncModalIsolation() {
   const shell = document.querySelector(".shell");
   if (!shell) return;
-  const modalOpen = state.viewerOpen || !el.settingsOverlay.classList.contains("hidden");
+  const modalOpen = state.viewerOpen || anyDialogOpen();
   if (modalOpen) {
     shell.setAttribute("aria-hidden", "true");
     shell.setAttribute("inert", "");
@@ -578,6 +592,9 @@ function idleActionMessage(album = selectedAlbum()) {
   const unreachable = unreachableSourceText(album);
   if (unreachable) return unreachable;
   if (mode === "review" && selectedCandidate()) return "Review this cover, then approve or reject it.";
+  if (mode === "review" && album.notes?.last_search_more && Number(album.notes?.last_search_saved) === 0) {
+    return "No more covers found. Try Choose Release, or Google Images.";
+  }
   if (mode === "review") return "Search again to add cover options.";
   if (album.status === "incompatible_artwork") return "This cover only needs converting. Convert Current fixes it in one step.";
   if (album.status === "not_square_artwork") return "Convert Current pads this cover to a square, or find a better one.";
@@ -951,6 +968,7 @@ function populateSettings(payload = {}) {
   el.settingMaxEmbed.value = settings.max_embedded_artwork_size || 0;
   el.settingSaveFolder.checked = Boolean(settings.save_approved_artwork_to_album_folder);
   el.settingBackupEmbed.checked = Boolean(settings.backup_before_embed);
+  applySourceOrder(settings.provider_order);
   el.settingDeezerEnabled.checked = Boolean(settings.deezer_enabled);
   el.settingItunesEnabled.checked = Boolean(settings.itunes_enabled);
   el.settingMusicbrainzEnabled.checked = Boolean(settings.musicbrainz_enabled);
@@ -982,6 +1000,7 @@ function readSettingsForm() {
     max_embedded_artwork_size: Number(el.settingMaxEmbed.value || 0),
     save_approved_artwork_to_album_folder: el.settingSaveFolder.checked,
     backup_before_embed: el.settingBackupEmbed.checked,
+    provider_order: currentSourceOrder(),
     deezer_enabled: el.settingDeezerEnabled.checked,
     itunes_enabled: el.settingItunesEnabled.checked,
     musicbrainz_enabled: el.settingMusicbrainzEnabled.checked,
@@ -1216,7 +1235,7 @@ function updateActionButtons() {
   el.candidateTitle.textContent = mode === "done" ? "Replacement Cover" : "Candidate";
   el.candidatePosition.classList.toggle("hidden", compactCandidate);
   el.actionsTitle.textContent = "Actions";
-  el.findArtworkBtn.textContent = mode === "done" ? "Search Again" : "Find Artwork";
+  el.findArtworkBtn.textContent = mode === "done" ? "Search Again" : Number(album?.candidate_count || 0) > 0 ? "Find More" : "Find Artwork";
   // For a cover that just needs converting, that's the main action.
   const convertFirst = canConvertCurrent && mode === "work";
   el.findArtworkBtn.classList.toggle("primary", mode !== "done" && !convertFirst);
@@ -1251,6 +1270,7 @@ function updateActionButtons() {
   el.rejectCandidateBtn.disabled = !album || !hasCandidate || busy;
   el.rejectAllBtn.disabled = !album || !hasCandidate || busy;
   el.importImageBtn.disabled = !album || busy;
+  el.chooseReleaseBtn.disabled = !album || busy;
   el.recheckAlbumBtn.disabled = !album || busyOrSearching;
   el.copyFolderBtn.disabled = !albumFolderPath(album);
   el.openSourceBtn.disabled = !sourceUrl;
@@ -1814,13 +1834,15 @@ async function startFreshScanFromSettings() {
 async function startArtworkSearch() {
   const album = selectedAlbum();
   if (!album) return;
+  // With options already saved, look for more on top of them.
+  const more = Number(album.candidate_count || 0) > 0;
   state.actionActive = true;
-  el.actionMessage.textContent = "Searching artwork";
+  el.actionMessage.textContent = more ? "Looking for more covers" : "Searching artwork";
   updateActionButtons();
   try {
     await api("/api/artwork/search", {
       method: "POST",
-      body: JSON.stringify({ album_key: album.album_key }),
+      body: JSON.stringify({ album_key: album.album_key, more }),
     });
     await refreshStatus();
     scheduleTick(500);
@@ -1858,6 +1880,239 @@ async function approveSelectedCandidate() {
 function openImportImagePicker() {
   if (!selectedAlbum()) return;
   el.importImageInput.click();
+}
+
+// ---- Artwork source order (Settings > Artwork) ----
+
+function currentSourceOrder() {
+  return [...el.sourceOrderList.children].map((row) => row.dataset.source);
+}
+
+function syncSourceOrderButtons() {
+  const rows = [...el.sourceOrderList.children];
+  rows.forEach((row, index) => {
+    const name = row.querySelector("label")?.textContent.trim().replace(/^Search /, "") || row.dataset.source;
+    row.querySelector(".move-up").disabled = index === 0;
+    row.querySelector(".move-down").disabled = index === rows.length - 1;
+    row.querySelector(".move-up").setAttribute("aria-label", `Move ${name} up`);
+    row.querySelector(".move-down").setAttribute("aria-label", `Move ${name} down`);
+    row.querySelector(".source-rank").textContent = String(index + 1);
+  });
+}
+
+function applySourceOrder(order) {
+  const rows = new Map([...el.sourceOrderList.children].map((row) => [row.dataset.source, row]));
+  for (const key of order || []) {
+    const row = rows.get(key);
+    if (row) el.sourceOrderList.append(row);
+  }
+  syncSourceOrderButtons();
+}
+
+function setupSourceOrder() {
+  for (const row of el.sourceOrderList.children) {
+    const rank = document.createElement("span");
+    rank.className = "source-rank";
+    const controls = document.createElement("span");
+    controls.className = "source-move";
+    for (const [cls, label, step] of [["move-up", "\u2191", -1], ["move-down", "\u2193", 1]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `ghost ${cls}`;
+      button.textContent = label;
+      button.addEventListener("click", () => {
+        const sibling = step < 0 ? row.previousElementSibling : row.nextElementSibling;
+        if (!sibling) return;
+        if (step < 0) el.sourceOrderList.insertBefore(row, sibling);
+        else el.sourceOrderList.insertBefore(sibling, row);
+        syncSourceOrderButtons();
+        setSettingsDirty(true);
+        button.disabled ? row.querySelector(step < 0 ? ".move-down" : ".move-up").focus() : button.focus();
+      });
+      controls.append(button);
+    }
+    row.prepend(rank);
+    row.append(controls);
+  }
+  syncSourceOrderButtons();
+}
+
+function anyDialogOpen() {
+  return !el.settingsOverlay.classList.contains("hidden") || !el.releaseOverlay.classList.contains("hidden");
+}
+
+// ---- Choose Release / import from a link ----
+
+function openReleaseDialog() {
+  const album = selectedAlbum();
+  if (!album) return;
+  state.releaseAlbumKey = album.album_key;
+  el.releaseSubtitle.textContent = `${album.artist || "Unknown artist"} - ${album.album || "Unknown album"}`;
+  el.releaseArtistInput.value = album.search_artist || album.artist || "";
+  el.releaseAlbumInput.value = album.search_album || album.album || "";
+  el.releaseLinkInput.value = "";
+  el.releaseList.replaceChildren();
+  el.releaseOverlay.classList.remove("hidden");
+  syncModalIsolation();
+  el.releaseLinkInput.focus();
+  searchReleases();
+}
+
+function closeReleaseDialog() {
+  el.releaseOverlay.classList.add("hidden");
+  state.releaseSearchToken = (state.releaseSearchToken || 0) + 1; // ignore late search results
+  syncModalIsolation();
+  el.chooseReleaseBtn.focus();
+}
+
+function setReleaseBusy(busy) {
+  for (const node of [el.releaseLinkBtn, el.releaseSearchBtn, ...el.releaseList.querySelectorAll("button")]) {
+    node.disabled = busy;
+  }
+}
+
+async function searchReleases() {
+  const token = (state.releaseSearchToken || 0) + 1;
+  state.releaseSearchToken = token;
+  el.releaseMessage.textContent = "Searching releases...";
+  el.releaseList.replaceChildren();
+  el.releaseSearchBtn.disabled = true;
+  try {
+    const payload = await api("/api/releases/search", {
+      method: "POST",
+      body: JSON.stringify({
+        album_key: state.releaseAlbumKey,
+        artist: el.releaseArtistInput.value.trim(),
+        album: el.releaseAlbumInput.value.trim(),
+      }),
+    });
+    if (token !== state.releaseSearchToken) return;
+    renderReleases(payload.releases || [], payload.unreachable_sources || []);
+  } catch (error) {
+    if (token !== state.releaseSearchToken) return;
+    el.releaseMessage.textContent = error.message || "Release search failed.";
+  } finally {
+    if (token === state.releaseSearchToken) el.releaseSearchBtn.disabled = false;
+  }
+}
+
+function releaseDetails(row) {
+  const parts = [row.year, row.country, row.format, row.label];
+  if (row.tracks) parts.push(`${row.tracks} track${Number(row.tracks) === 1 ? "" : "s"}`);
+  return parts.filter(Boolean).join(" \u00b7 ");
+}
+
+function renderReleases(rows, unreachable) {
+  const offline = unreachable.length ? ` Couldn't reach ${unreachable.join(" and ")}.` : "";
+  if (!rows.length) {
+    el.releaseMessage.textContent = `No releases found. Try different words, or paste a link above.${offline}`;
+    return;
+  }
+  const matches = rows.filter((row) => row.match).length;
+  el.releaseMessage.textContent = `${rows.length} release${rows.length === 1 ? "" : "s"} found${matches ? `, ${matches} likely match${matches === 1 ? "" : "es"} first` : ""}.${offline}`;
+  const items = rows.map((row) => {
+    const li = document.createElement("li");
+    li.className = `release-item${row.match ? " is-match" : ""}`;
+    const thumb = document.createElement("div");
+    thumb.className = "release-thumb";
+    if (row.thumb) {
+      const img = document.createElement("img");
+      img.src = row.thumb;
+      img.alt = "";
+      img.loading = "lazy";
+      img.referrerPolicy = "no-referrer";
+      img.addEventListener("error", () => img.remove());
+      thumb.append(img);
+    }
+    const text = document.createElement("div");
+    text.className = "release-text";
+    const title = document.createElement("strong");
+    title.textContent = row.title || "Untitled";
+    const artist = document.createElement("span");
+    artist.textContent = row.artist || "";
+    const meta = document.createElement("small");
+    meta.textContent = releaseDetails(row);
+    const badges = document.createElement("span");
+    badges.className = "release-badges";
+    const source = document.createElement("span");
+    source.className = "release-badge";
+    source.textContent = row.source_label;
+    badges.append(source);
+    if (row.match) {
+      const match = document.createElement("span");
+      match.className = "release-badge match";
+      match.textContent = "Likely match";
+      badges.append(match);
+    }
+    text.append(title, artist, meta, badges);
+    const actions = document.createElement("div");
+    actions.className = "release-actions";
+    const use = document.createElement("button");
+    use.type = "button";
+    use.className = row.match ? "primary" : "ghost";
+    use.textContent = "Use This";
+    use.addEventListener("click", () => importRelease(row, use));
+    actions.append(use);
+    if (row.page) {
+      const open = document.createElement("a");
+      open.href = row.page;
+      open.target = "_blank";
+      open.rel = "noopener noreferrer";
+      open.textContent = "View";
+      actions.append(open);
+    }
+    li.append(thumb, text, actions);
+    return li;
+  });
+  el.releaseList.replaceChildren(...items);
+}
+
+async function finishReleaseImport(payload) {
+  closeReleaseDialog();
+  await refreshStatus();
+  await refreshQueue({ force: true });
+  await refreshCandidates(selectedAlbum(), payload.candidate_id);
+  const what = payload.added > 1 ? `${payload.added} covers` : "a cover";
+  el.actionMessage.textContent = `Added ${what} from ${payload.source || "the link"}. Review it, then approve or reject it.`;
+}
+
+async function importRelease(row, button) {
+  setReleaseBusy(true);
+  button.textContent = "Getting cover...";
+  el.releaseMessage.textContent = `Getting the cover from ${row.source_label}...`;
+  try {
+    const payload = await api("/api/releases/import", {
+      method: "POST",
+      body: JSON.stringify({ album_key: state.releaseAlbumKey, source: row.source, id: row.id }),
+    });
+    await finishReleaseImport(payload);
+  } catch (error) {
+    el.releaseMessage.textContent = error.message || "That cover could not be imported.";
+    button.textContent = "Use This";
+    setReleaseBusy(false);
+  }
+}
+
+async function importFromLink() {
+  const url = el.releaseLinkInput.value.trim();
+  if (!url) {
+    el.releaseMessage.textContent = "Paste a link first.";
+    el.releaseLinkInput.focus();
+    return;
+  }
+  setReleaseBusy(true);
+  el.releaseMessage.textContent = "Getting the cover from that link...";
+  try {
+    const payload = await api("/api/artwork/import-link", {
+      method: "POST",
+      body: JSON.stringify({ album_key: state.releaseAlbumKey, url }),
+    });
+    await finishReleaseImport({ ...payload, source: payload.source || "the link", added: payload.added || 1 });
+  } catch (error) {
+    el.releaseMessage.textContent = error.message || "That link could not be imported.";
+    setReleaseBusy(false);
+    el.releaseLinkInput.focus();
+  }
 }
 
 async function importSelectedImage(file) {
@@ -2214,6 +2469,26 @@ function bind() {
     }
     el.tokenWarning.classList.add("hidden");
   });
+  setupSourceOrder();
+  el.chooseReleaseBtn.addEventListener("click", openReleaseDialog);
+  el.closeReleaseBtn.addEventListener("click", closeReleaseDialog);
+  el.releaseOverlay.addEventListener("click", (event) => {
+    if (event.target === el.releaseOverlay) closeReleaseDialog();
+  });
+  el.releaseOverlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeReleaseDialog();
+    }
+  });
+  el.releaseLinkForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    importFromLink();
+  });
+  el.releaseSearchForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    searchReleases();
+  });
   el.moreActionsBtn.addEventListener("click", () => setMoreActionsOpen(!el.actionsPanel.classList.contains("show-more")));
   el.markGoodBtn.addEventListener("click", () => runAlbumAction("/api/album/mark-good", "Marked as good"));
   el.skipAlbumBtn.addEventListener("click", () => runAlbumAction("/api/album/skip", "Skipped for now"));
@@ -2350,7 +2625,7 @@ function bind() {
   // S skip, C convert, N next album needing work, / search the queue.
   document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
-    if (state.viewerOpen || state.batchMenuOpen || !el.settingsOverlay.classList.contains("hidden")) return;
+    if (state.viewerOpen || state.batchMenuOpen || anyDialogOpen()) return;
     const target = event.target;
     const tag = String(target?.tagName || "").toLowerCase();
     if (target?.isContentEditable || ["input", "textarea", "select"].includes(tag)) return;
