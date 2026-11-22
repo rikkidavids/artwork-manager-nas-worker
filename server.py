@@ -1891,6 +1891,11 @@ def web_restore_backup_history(history_id: Any, job_id: str = '') -> Dict[str, A
     restored = 0
     current_backups = []
     failed = []
+    restore_stamp = backup_stamp()
+    try:
+        restore_base = Path(os.path.commonpath([str(Path(item.get('file') or '').parent) for item in backups]))
+    except ValueError:
+        restore_base = None
     for index, item in enumerate(backups, 1):
         update_job(job_id, label=f'Restoring backup {index}/{len(backups)}')
         try:
@@ -1899,7 +1904,7 @@ def web_restore_backup_history(history_id: Any, job_id: str = '') -> Dict[str, A
             if not source.is_file():
                 raise FileNotFoundError(f'Backup file is missing: {source}')
             if target.exists():
-                current_backups.append({'file': str(target), 'backup': backup_file(target, f'{album_key}_before_restore')})
+                current_backups.append({'file': str(target), 'backup': backup_file(target, f'{album_key}_before_restore', album_folder=restore_base, stamp=restore_stamp)})
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
             restored += 1
@@ -3585,8 +3590,12 @@ def album_folder_cover_status(album_path: Path, target_size: int, folder_files: 
 
 
 def iter_music_files(album_folder: Path):
-    for root, _, files in os.walk(album_folder):
+    for root, dirs, files in os.walk(album_folder):
+        dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d != '@eaDir')
         for fn in sorted(files):
+            # Skip macOS AppleDouble sidecars (._01.flac) left on shared volumes.
+            if fn.startswith('._'):
+                continue
             if fn.lower().endswith(MUSIC_EXTENSIONS):
                 yield Path(root) / fn
 
@@ -3736,12 +3745,31 @@ def embed_file(path: Path, image_bytes: bytes, mime='image/jpeg') -> bool:
     return False
 
 
-def backup_file(path: Path, album_key: str) -> str:
-    stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+def backup_stamp() -> str:
+    # Microseconds keep two quick jobs on the same album from sharing a folder.
+    return datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+
+
+def backup_file(path: Path, album_key: str, album_folder: Path | None = None, stamp: str | None = None) -> str:
+    """Copy a music file into the backup area before it is rewritten.
+
+    The path relative to ``album_folder`` is kept, so multi-disc albums
+    (CD1/01.flac and CD2/01.flac) get separate backups instead of the second
+    overwriting the first. Pass one ``stamp`` per job so its files share a folder.
+    """
+    stamp = stamp or backup_stamp()
     safe = ''.join(ch if ch.isalnum() or ch in ' ._-' else '_' for ch in (album_key or 'album'))[:120]
     dest_dir = BACKUP_ROOT / safe / stamp
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / path.name
+    rel = Path(path.name)
+    if album_folder is not None:
+        try:
+            rel = Path(path).relative_to(album_folder)
+        except ValueError:
+            rel = Path(path.name)
+    dest = dest_dir / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        raise FileExistsError(f'Backup already exists, refusing to overwrite: {dest}')
     shutil.copy2(path, dest)
     return str(dest)
 
@@ -3784,10 +3812,11 @@ def embed_album_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                 'image_width': dims[0], 'image_height': dims[1], 'no_audio_files': True,
                 'message': 'No supported audio files found in album folder',
             }
+        stamp = backup_stamp()
         for fp in files:
             try:
                 if backup:
-                    backups.append({'file': str(fp), 'backup': backup_file(fp, album_key)})
+                    backups.append({'file': str(fp), 'backup': backup_file(fp, album_key, album_folder=album_folder, stamp=stamp)})
                 if embed_file(fp, prepared, mime):
                     updated += 1
             except Exception as exc:
