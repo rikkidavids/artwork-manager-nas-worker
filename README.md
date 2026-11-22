@@ -2,7 +2,7 @@
 
 NAS-local Docker app for Artwork Manager. It now includes the worker API plus the first browser UI, so scans and queue storage can run directly on the NAS without the Mac desktop app crawling folders over SMB/VPN.
 
-Current worker build: **5.58**
+Current worker build: **5.59**
 Worker API: **5**
 
 ## Why This Repo Exists
@@ -16,6 +16,15 @@ ghcr.io/rikkidavids/artwork-manager-nas-worker:latest
 Synology Container Manager can then update the worker like a normal container image. GitHub builds the image; the NAS only pulls and restarts it.
 
 Publishing is automatic: `.github/workflows/docker-image.yml` tests every change and publishes a new image whenever `main` changes. See [Updates](#updates) for how it reaches the NAS.
+
+Build 5.59 finishes moving the Mac app's tools across:
+
+- **Settings → History**: a searchable log of approvals, embeds, restores, searches, rejections and maintenance, with a link to open each album.
+- **Settings → Maintenance → Storage**: shows how much space downloaded covers use, and clears the ones you've already dealt with (rejected, approved, or album finished) plus leftover files. Covers waiting for review are never touched, and rejected covers still won't be offered again.
+- **Dry run** (Settings → Artwork): Approve & Embed reports what it would change without touching any file.
+- **Ask before approving a cover with a warning** can now be turned off (Settings → Artwork).
+- The album summary shows whether the folder has a `cover.jpg`, and its size.
+- Press **?** for the keyboard shortcuts. Settings → General → Spacing offers a roomier Comfortable layout (per browser).
 
 Build 5.58 reworks the review screen for laptop-sized screens: the review side gets most of the width, cover options show as a grid of thumbnails with size, source and score, the action buttons stay pinned in reach while the review side scrolls, and covers scale to the screen height.
 
@@ -157,7 +166,7 @@ http://YOUR-NAS-IP:8765/app/
 Open the plain worker status at `http://YOUR-NAS-IP:8765/` without a browser UI check. You should see:
 
 ```text
-worker_build: "5.58"
+worker_build: "5.59"
 api: 5
 ```
 

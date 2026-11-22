@@ -2745,3 +2745,144 @@ tbody tr.batch-selected:not(.selected) {
     width: 38%;
   }
 }
+
+/* Settings > Maintenance > Storage */
+.storage-list {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+
+.storage-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.storage-list dt {
+  color: var(--muted);
+}
+
+.storage-list dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* Settings > History */
+.history-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.history-row time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.86rem;
+  padding-top: 1px;
+}
+
+.history-detail {
+  display: block;
+  color: var(--muted);
+  font-size: 0.88rem;
+  margin-top: 2px;
+}
+
+.history-empty {
+  color: var(--muted);
+  padding: 12px 0;
+}
+
+.history-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.link-button {
+  background: none;
+  border: 0;
+  padding: 0;
+  height: auto;
+  min-height: 0;
+  color: var(--blue-text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.link-button:hover { text-decoration: underline; }
+.link-button:disabled { color: var(--muted); cursor: default; text-decoration: none; }
+
+@media (max-width: 600px) {
+  .history-filters, .history-row { grid-template-columns: 1fr; gap: 4px; }
+}
+
+.summary-meta span.warn {
+  color: var(--amber);
+  border-color: var(--amber-soft);
+  background: var(--amber-soft);
+}
+
+/* Keyboard shortcuts dialog */
+.shortcuts-window {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.shortcut-list {
+  margin: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.shortcut-list > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.shortcut-list dd { margin: 0; }
+
+kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--surface-soft);
+  font: 700 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+}
+
+/* Comfortable spacing (Settings > General, per browser) */
+:root[data-density="comfortable"] body { font-size: 14px; }
+:root[data-density="comfortable"] th,
+:root[data-density="comfortable"] td { height: 36px; padding: 0 10px; }
+:root[data-density="comfortable"] button { height: 38px; }
+:root[data-density="comfortable"] .summary-meta span { padding-top: 4px; padding-bottom: 4px; }
+
+.maintenance-result:empty { display: none; }
