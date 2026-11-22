@@ -312,7 +312,22 @@
                 <label><input id="settingDeezerEnabled" name="deezer_enabled" type="checkbox"> Search Deezer</label>
                 <label><input id="settingItunesEnabled" name="itunes_enabled" type="checkbox"> Search Apple/iTunes</label>
                 <label><input id="settingMusicbrainzEnabled" name="musicbrainz_enabled" type="checkbox"> Search MusicBrainz</label>
+                <label><input id="settingDiscogsEnabled" name="discogs_enabled" type="checkbox"> Search Discogs (needs a token)</label>
               </div>
+              <div class="setting-grid">
+                <label class="setting-field">
+                  <span>Discogs token</span>
+                  <input id="settingDiscogsToken" name="discogs_token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste a Discogs personal access token">
+                </label>
+                <label class="setting-field">
+                  <span>Saved Discogs token</span>
+                  <input id="settingDiscogsTokenStatus" type="text" readonly value="-">
+                </label>
+              </div>
+              <div class="switch-list">
+                <label><input id="settingDiscogsTokenClear" type="checkbox"> Remove saved Discogs token on save</label>
+              </div>
+              <p class="setting-note">Create a token at discogs.com &gt; Settings &gt; Developers. It stays on the NAS and is never shown again here.</p>
               <div class="setting-grid">
                 <label class="setting-field">
                   <span>Saved options per album</span>

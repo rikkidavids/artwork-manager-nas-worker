@@ -131,6 +131,10 @@ const el = {
   settingDeezerEnabled: document.getElementById("settingDeezerEnabled"),
   settingItunesEnabled: document.getElementById("settingItunesEnabled"),
   settingMusicbrainzEnabled: document.getElementById("settingMusicbrainzEnabled"),
+  settingDiscogsEnabled: document.getElementById("settingDiscogsEnabled"),
+  settingDiscogsToken: document.getElementById("settingDiscogsToken"),
+  settingDiscogsTokenStatus: document.getElementById("settingDiscogsTokenStatus"),
+  settingDiscogsTokenClear: document.getElementById("settingDiscogsTokenClear"),
   settingMaxCandidates: document.getElementById("settingMaxCandidates"),
   settingProviderWorkers: document.getElementById("settingProviderWorkers"),
   settingToken: document.getElementById("settingToken"),
@@ -853,6 +857,14 @@ function populateSettings(payload = {}) {
   el.settingDeezerEnabled.checked = Boolean(settings.deezer_enabled);
   el.settingItunesEnabled.checked = Boolean(settings.itunes_enabled);
   el.settingMusicbrainzEnabled.checked = Boolean(settings.musicbrainz_enabled);
+  el.settingDiscogsEnabled.checked = Boolean(settings.discogs_enabled);
+  // The server never sends the token back; only whether one is saved.
+  el.settingDiscogsToken.value = "";
+  el.settingDiscogsToken.placeholder = settings.discogs_token_set
+    ? "Saved - paste a new token to replace it"
+    : "Paste a Discogs personal access token";
+  el.settingDiscogsTokenStatus.value = settings.discogs_token_set ? "Saved" : "Not set - Discogs is skipped";
+  el.settingDiscogsTokenClear.checked = false;
   el.settingMaxCandidates.value = settings.max_candidates_per_album || 5;
   el.settingProviderWorkers.value = settings.parallel_provider_workers || 2;
   el.settingToken.value = state.token;
@@ -876,6 +888,9 @@ function readSettingsForm() {
     deezer_enabled: el.settingDeezerEnabled.checked,
     itunes_enabled: el.settingItunesEnabled.checked,
     musicbrainz_enabled: el.settingMusicbrainzEnabled.checked,
+    discogs_enabled: el.settingDiscogsEnabled.checked,
+    discogs_token: el.settingDiscogsToken.value.trim(),
+    discogs_token_clear: el.settingDiscogsTokenClear.checked,
     max_candidates_per_album: Number(el.settingMaxCandidates.value || 5),
     parallel_provider_workers: Number(el.settingProviderWorkers.value || 2),
   };
