@@ -117,15 +117,30 @@ jobs:
             *) url="${url}?image=${IMAGE}" ;;
           esac
 
-          if curl --fail --show-error --silent \
+          # The maintained Watchtower only accepts POST for updates.
+          status=$(curl --silent --show-error --output /tmp/watchtower.txt --write-out "%{http_code}" \
+            -X POST \
             --connect-timeout 10 \
             --max-time 180 \
             --retry 2 \
             --retry-delay 5 \
             -H "Authorization: Bearer ${AMW_WATCHTOWER_UPDATE_TOKEN}" \
-            "$url"; then
-            echo "::notice::NAS update requested. The new build should be running within a minute."
-          else
-            echo "::warning::Couldn't reach Watchtower on the NAS. The image is published; it will update on Watchtower's next regular check."
-            exit 1
-          fi
+            "$url" 2>/tmp/watchtower-err.txt) || status="000"
+
+          case "$status" in
+            2??)
+              echo "::notice::NAS update requested. The new build should be running within a minute."
+              ;;
+            000)
+              echo "::warning::Couldn't connect to Watchtower ($(head -c 200 /tmp/watchtower-err.txt)). The image is published; the NAS will update on Watchtower's next regular check."
+              exit 1
+              ;;
+            401|403)
+              echo "::warning::Watchtower refused the token (HTTP $status). Check AMW_WATCHTOWER_UPDATE_TOKEN matches WATCHTOWER_HTTP_API_TOKEN on the NAS."
+              exit 1
+              ;;
+            *)
+              echo "::warning::Watchtower answered HTTP $status: $(head -c 200 /tmp/watchtower.txt). The image is published; the NAS will update on Watchtower's next regular check."
+              exit 1
+              ;;
+          esac
